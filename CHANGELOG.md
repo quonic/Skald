@@ -19,6 +19,19 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **Open/closed layout asymmetry on overlay-anchored widgets.**
+  Affected `combobox`, `select`, `date_picker`, `time_picker`,
+  `color_picker`, and `context_menu`. Pre-fix: when closed each
+  widget returned its trigger directly so a stretching parent's
+  offered width flowed through correctly; when open each returned
+  `col(trigger, overlay(...))` *without* `cross_align`, so the
+  trigger reverted to its intrinsic width (typically 220 px) and
+  the popover — anchored to the now-shrunken `trigger_rect` —
+  followed. The trigger visibly collapsed the moment the popover
+  appeared. Fix: each open-state wrapper col now sets
+  `cross_align = .Stretch` so layout-stretch flows through to the
+  trigger and the overlay anchors to the correctly-sized rect.
+  No-op for non-stretching parents.
 - **`text_input(wrap = true)` now wraps correctly when no `width` is
   passed.** Pre-fix: `width = 0` (the implicit "stretch to fit parent"
   default) made `inner_w := width - 2*pad.x` negative, which silently

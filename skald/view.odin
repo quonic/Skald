@@ -5172,12 +5172,15 @@ _select_impl :: proc(
 	if !st.open { return trigger }
 
 	// Returned as a stack so the overlay sits alongside the trigger in
-	// the parent layout with zero impact on sibling placement (the
-	// overlay contributes 0 size, and we clamp the stack's cross extent
-	// to the trigger's width so the col doesn't stretch vertically).
+	// the parent layout. `cross_align = .Stretch` mirrors the closed-
+	// state return (where trigger was the top-level view directly) so
+	// a stretching parent's offered width still reaches the trigger
+	// — without it the field would visibly shrink the moment it
+	// opened. Overlay contributes 0 size to the col's cross extent.
 	return col(
 		trigger,
 		overlay(trigger_rect, list, .Below, {0, 4}, anim_op),
+		cross_align = .Stretch,
 	)
 }
 
@@ -5577,9 +5580,18 @@ _combobox_impl :: proc(
 		cross_align = .Stretch,
 	)
 
+	// `cross_align = .Stretch` on the wrapper col mirrors the closed-
+	// state return (where trigger was the top-level view directly).
+	// Without it, the wrapper would report the trigger's intrinsic
+	// width upward and a stretching parent's offered size never
+	// reached the trigger — the field would visibly shrink the
+	// moment it opened. The overlay anchors to `trigger_rect`, which
+	// the trigger records post-layout, so the popover follows the
+	// stretched trigger correctly.
 	view = col(
 		trigger,
 		overlay(trigger_rect, list, .Below, {0, 4}, anim_op),
+		cross_align = .Stretch,
 	)
 	return
 }
@@ -6453,9 +6465,12 @@ _date_picker_impl :: proc(
 		view = trigger
 		return
 	}
+	// `cross_align = .Stretch` mirrors the closed-state return so a
+	// stretching parent's offered width still reaches the trigger.
 	view = col(
 		trigger,
 		overlay(trigger_rect, card, .Below, {0, 4}, anim_op),
+		cross_align = .Stretch,
 	)
 	return
 }
@@ -7043,9 +7058,12 @@ _time_picker_impl :: proc(
 		focused           = focused,
 	}
 
+	// `cross_align = .Stretch` mirrors the closed-state return so a
+	// stretching parent's offered width still reaches the trigger.
 	view = col(
 		trigger,
 		overlay(trigger_rect, card, .Below, {0, 4}, anim_op),
+		cross_align = .Stretch,
 	)
 	return
 }
@@ -7553,12 +7571,17 @@ _color_picker_impl :: proc(
 		cross_align = .Start,
 	)
 
+	// `cross_align = .Stretch` mirrors the closed-state return
+	// (`view = zone_trigger`) so a stretching parent's offered width
+	// still reaches the swatch trigger. The 4 overlays contribute 0
+	// cross extent to the col.
 	view = col(
 		zone_trigger,
 		overlay(trigger_rect, card, .Below, {0, 4}, anim_op),
 		sv_black_ovl,
 		sv_marker_ovl,
 		hue_marker_ovl,
+		cross_align = .Stretch,
 	)
 	return
 }
@@ -7940,9 +7963,14 @@ context_menu :: proc(
 		cross_align = .Stretch,
 	)
 
+	// `cross_align = .Stretch` mirrors the closed-state return
+	// (`return zoned` when not open) so a stretching parent's offered
+	// width still reaches the zone child. The overlay contributes 0
+	// cross extent to the col.
 	return col(
 		zoned,
 		overlay(anchor_rect, card, .Below, {0, 0}, anim_op),
+		cross_align = .Stretch,
 	)
 }
 

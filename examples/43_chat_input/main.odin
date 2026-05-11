@@ -27,6 +27,7 @@ State :: struct {
 	messages: [dynamic]string,
 	draft:    string,
 	disabled: bool,
+	tz:       string,
 }
 
 Msg :: union {
@@ -35,6 +36,7 @@ Msg :: union {
 	Disabled_Toggled,
 	Clear_All_Pressed,
 	Seed_CRLF_Pressed,
+	Tz_Changed,
 }
 
 Draft_Changed     :: distinct string
@@ -42,6 +44,16 @@ Send_Pressed      :: distinct string
 Disabled_Toggled  :: distinct bool
 Clear_All_Pressed :: struct{}
 Seed_CRLF_Pressed :: struct{}
+Tz_Changed        :: distinct string
+
+TIMEZONES := [?]string{
+	"Europe/London",
+	"Europe/Paris",
+	"America/New_York",
+	"America/Los_Angeles",
+	"Asia/Tokyo",
+	"Australia/Sydney",
+}
 
 // A long string with literal \r\n separators, mimicking text loaded
 // from a Windows-authored config / JSON / HTTP source. Each "line" is
@@ -80,6 +92,8 @@ update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
 		// the framework normalises it on assignment and wraps the
 		// resulting logical lines correctly.
 		out.draft = strings.clone(CRLF_SEED)
+	case Tz_Changed:
+		out.tz = strings.clone(string(v))
 	}
 	return out, {}
 }
@@ -122,6 +136,17 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 		disabled    = s.disabled,
 	)
 
+	// Same shape as boc-next's wizard combobox: no `width`, lives
+	// inside a stretching parent. Closed and open states should both
+	// fill the parent width; the trigger shouldn't shrink the moment
+	// the popover appears.
+	tz_picker := skald.combobox(ctx,
+		s.tz,
+		TIMEZONES[:],
+		proc(v: string) -> Msg { return Tz_Changed(v) },
+		placeholder = "Timezone…",
+	)
+
 	controls := skald.row(
 		skald.checkbox(ctx, s.disabled, "Disabled",
 			proc(v: bool) -> Msg { return Disabled_Toggled(v) }),
@@ -147,6 +172,8 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 		list,
 		skald.spacer(th.spacing.md),
 		composer,
+		skald.spacer(th.spacing.md),
+		tz_picker,
 		skald.spacer(th.spacing.md),
 		controls,
 		width       = 660,
