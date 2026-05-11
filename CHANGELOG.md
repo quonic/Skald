@@ -19,6 +19,13 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`text_input` normalises pasted line endings.** Pasting Windows
+  text (`\r\n`) or classic-Mac text (bare `\r`) into a multi-line
+  text_input or `chat_input` now collapses to a single `\n` byte at
+  insert time — no more stray `\r` tofu inside the editor, no more
+  double-counted cursor advance. Single-line text_inputs strip
+  newlines from paste entirely so a paste from a multi-line source
+  flattens to one line instead of embedding a non-printable byte.
 - **`text()` now honours embedded line breaks in the no-wrap path.**
   Before: `text("a\nb", color)` (without `max_width`) rendered the
   `\n` as a missing-glyph tofu on one row. After: it renders as two

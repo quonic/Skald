@@ -3116,6 +3116,21 @@ _text_input_impl :: proc(
 			had_selection := has_selection(anchor, cursor)
 			new_value, cursor = drop_selection(new_value, anchor, cursor)
 			ins := ctx.input.text
+			// Cross-platform paste normalisation. SDL hands us the raw
+			// clipboard bytes — on Windows that's \r\n, on classic Mac
+			// it's bare \r. Collapse both to \n so the buffer is always
+			// internally-consistent (one byte per hard break, no stray
+			// \r tofu mid-line, no double-counted cursor advance).
+			// Single-line widgets then drop \n entirely so a paste from
+			// a multi-line source flattens to one line instead of
+			// embedding a non-printable.
+			if strings.contains_rune(ins, '\r') {
+				ins, _ = strings.replace_all(ins, "\r\n", "\n", context.temp_allocator)
+				ins, _ = strings.replace_all(ins, "\r", "\n", context.temp_allocator)
+			}
+			if !multiline && strings.contains_rune(ins, '\n') {
+				ins, _ = strings.replace_all(ins, "\n", "", context.temp_allocator)
+			}
 			if max_chars > 0 {
 				budget := max_chars - utf8.rune_count_in_string(new_value)
 				ins = truncate_runes(ins, budget)
