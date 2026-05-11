@@ -17,6 +17,11 @@ import "gui:skald"
 //     newlines, then submit       → box grows up to ~6 lines then scrolls
 //                                   internally; submit still works.
 //   * Toggle the "Disabled" check → composer goes muted, keys do nothing.
+//   * Press "Seed CRLF"           → loads a string with \r\n separators
+//                                   (mimicking config / JSON / network
+//                                   input). text_input normalises on
+//                                   assignment, so wrap kicks in cleanly
+//                                   with no \r tofu and no clipped lines.
 
 State :: struct {
 	messages: [dynamic]string,
@@ -29,12 +34,27 @@ Msg :: union {
 	Send_Pressed,
 	Disabled_Toggled,
 	Clear_All_Pressed,
+	Seed_CRLF_Pressed,
 }
 
 Draft_Changed     :: distinct string
 Send_Pressed      :: distinct string
 Disabled_Toggled  :: distinct bool
 Clear_All_Pressed :: struct{}
+Seed_CRLF_Pressed :: struct{}
+
+// A long string with literal \r\n separators, mimicking text loaded
+// from a Windows-authored config / JSON / HTTP source. Each "line" is
+// deliberately wider than the composer's content area so the wrap
+// path has work to do — pre-fix, the \r bytes broke build_visual_lines
+// and the long lines clipped at the right edge instead of wrapping.
+CRLF_SEED ::
+	"This is a long Windows-flavoured line that should wrap inside the " +
+	"composer because the visible width is narrower than this paragraph.\r\n" +
+	"Second paragraph, also long enough that the wrap path has to break " +
+	"it into multiple visual lines if the framework is treating \\r\\n " +
+	"as a hard break.\r\n" +
+	"Third paragraph, shorter."
 
 init :: proc() -> State {
 	out := State{}
@@ -55,6 +75,11 @@ update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
 		out.disabled = bool(v)
 	case Clear_All_Pressed:
 		clear(&out.messages)
+	case Seed_CRLF_Pressed:
+		// Seed the composer with a \r\n-heavy value so we can verify
+		// the framework normalises it on assignment and wraps the
+		// resulting logical lines correctly.
+		out.draft = strings.clone(CRLF_SEED)
 	}
 	return out, {}
 }
@@ -98,6 +123,9 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 			proc(v: bool) -> Msg { return Disabled_Toggled(v) }),
 		skald.spacer(th.spacing.lg),
 		skald.button(ctx, "Clear all", Msg(Clear_All_Pressed{}),
+			color = th.color.surface, fg = th.color.fg_muted),
+		skald.spacer(th.spacing.md),
+		skald.button(ctx, "Seed CRLF", Msg(Seed_CRLF_Pressed{}),
 			color = th.color.surface, fg = th.color.fg_muted),
 		spacing     = th.spacing.md,
 		cross_align = .Center,

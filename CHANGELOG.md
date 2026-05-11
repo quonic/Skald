@@ -19,6 +19,18 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`text_input` normalises line endings on the app-supplied `value`.**
+  Pre-fix: a value containing `\r\n` (loaded from disk / JSON / HTTP)
+  passed `build_visual_lines` straight through; the wrap scanner
+  treated `\r` as content and long logical lines clipped at the
+  right edge instead of word-wrapping. Now: `\r\n` and bare `\r`
+  collapse to `\n` at the top of the impl, before cursor clamping
+  or the visual-line scan, so every downstream consumer (wrap,
+  render, cursor, undo) operates on canonical bytes. The
+  `changed = new_value != value` predicate fires `on_change` with
+  the normalised string so the app stores the canonical form
+  going forward — no app-side preprocessing needed. The
+  `examples/43_chat_input` "Seed CRLF" button exercises the path.
 - **`text_input` normalises pasted line endings.** Pasting Windows
   text (`\r\n`) or classic-Mac text (bare `\r`) into a multi-line
   text_input or `chat_input` now collapses to a single `\n` byte at

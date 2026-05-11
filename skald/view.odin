@@ -2767,15 +2767,35 @@ _text_input_impl :: proc(
 	// underneath us, so clamp first. `new_value` is a named return —
 	// the wrappers read it on exit to dispatch on_change.
 	new_value = value
+	// Normalise line endings on the app-supplied value, matching the
+	// post-paste invariant (commit e3ae0a9). Strings loaded from disk
+	// / JSON / HTTP can carry \r\n (Windows) or bare \r (classic Mac);
+	// the wrap scanner and visual-lines builder treat anything that
+	// isn't \n as literal content, so without this the \r breaks
+	// word-wrap and renders as a tofu glyph. Normalising at the entry
+	// point keeps every downstream consumer (cursor math, undo, wrap,
+	// render) on canonical bytes, and the `changed = new_value !=
+	// value` predicate at the bottom of this proc fires on_change with
+	// the normalised string so the app stores the canonical form
+	// without needing its own preprocessing pass.
+	if strings.contains_rune(new_value, '\r') {
+		new_value, _ = strings.replace_all(new_value, "\r\n", "\n", context.temp_allocator)
+		new_value, _ = strings.replace_all(new_value, "\r", "\n", context.temp_allocator)
+	}
+	if !multiline && strings.contains_rune(new_value, '\n') {
+		new_value, _ = strings.replace_all(new_value, "\n", "", context.temp_allocator)
+	}
 	cursor    := clamp(st.cursor_pos, 0, len(new_value))
 	anchor    := clamp(st.selection_anchor, 0, len(new_value))
 
-	// Pre-edit snapshot for the undo stack. `value_before` is the app's
-	// persistent string so the clone inside undo_push is safe to hold
-	// across frames. `cursor_before`/`anchor_before` mirror the just-
-	// clamped values — they're what the caret looked like when the frame
-	// started, before mouse or key events reshuffled it.
-	value_before  := value
+	// Pre-edit snapshot for the undo stack. `value_before` mirrors the
+	// just-normalised buffer so the undo entry captures the canonical
+	// form (otherwise Ctrl-Z would put \r\n bytes back, only for the
+	// next frame to re-normalise them). `cursor_before`/`anchor_before`
+	// mirror the just-clamped values — they're what the caret looked
+	// like when the frame started, before mouse or key events
+	// reshuffled it.
+	value_before  := new_value
 	cursor_before := cursor
 	anchor_before := anchor
 
