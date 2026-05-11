@@ -2894,8 +2894,23 @@ _text_input_impl :: proc(
 	// of the current buffer, so it must follow edits. `inner_w` is the
 	// text column inside the padding; the scrollbar sits in the right-pad
 	// column past that.
-	inner_w := width - 2 * pad.x
+	//
+	// Width-0 fallback: when the caller didn't specify a width (the
+	// widget is stretching to fit a flex/Stretch parent), the param
+	// `width` is 0 and inner_w would be negative — silently disabling
+	// wrap inside `build_visual_lines`. Fall back to the rect this
+	// widget was assigned last frame so a stretchy text_input still
+	// wraps correctly. The very first frame for a given id has no
+	// last_rect yet, so we schedule an immediate redraw so the next
+	// frame picks up the just-stamped rect and rebuilds visual_lines
+	// with proper wrap.
+	effective_w := width
+	if effective_w <= 0 && st.last_rect.w > 0 { effective_w = st.last_rect.w }
+	inner_w := effective_w - 2 * pad.x
 	do_wrap := multiline && wrap
+	if width <= 0 && st.last_rect.w == 0 && do_wrap {
+		widget_request_frame_at(ctx, 1)
+	}
 	visual_lines := build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap)
 
 	// Password: compute a `•`-per-rune mask used for hit-testing and

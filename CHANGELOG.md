@@ -19,6 +19,19 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`text_input(wrap = true)` now wraps correctly when no `width` is
+  passed.** Pre-fix: `width = 0` (the implicit "stretch to fit parent"
+  default) made `inner_w := width - 2*pad.x` negative, which silently
+  disabled wrap inside `build_visual_lines`. Long logical lines clipped
+  at the right edge instead of word-wrapping. Now: when `width <= 0`,
+  the impl falls back to `st.last_rect.w` (the rect the widget was
+  assigned last frame), and on the very first frame for a given id it
+  schedules an immediate redraw so lazy-redraw doesn't lock in the
+  bad-wrap frame. Stretchy multiline text_inputs (incl. `chat_input`
+  with no explicit width) now wrap as soon as their parent layout
+  resolves. The "always pass an explicit width" workaround in
+  `project_inline_text_input_in_rows` is no longer required for
+  multiline+wrap.
 - **`text_input` normalises line endings on the app-supplied `value`.**
   Pre-fix: a value containing `\r\n` (loaded from disk / JSON / HTTP)
   passed `build_visual_lines` straight through; the wrap scanner

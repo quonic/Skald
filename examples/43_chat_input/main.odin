@@ -108,12 +108,16 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 		skald.col(..rows[:], spacing = 0, cross_align = .Start),
 	)
 
+	// Deliberately omit `width` so chat_input → text_input falls into
+	// the width=0 stretch path. The parent column below pins a width
+	// and stretches children, so chat_input gets sized via layout and
+	// wraps via the `_text_input_impl` last_rect fallback. Same shape
+	// as boc-next's onboarding text fields.
 	composer := skald.chat_input(ctx,
 		s.draft,
 		proc(v: string) -> Msg { return Draft_Changed(v) },
 		proc(v: string) -> Msg { return Send_Pressed(v) },
 		placeholder = "Message… (Enter to send, Shift+Enter for newline)",
-		width       = 600,
 		max_lines   = 6,
 		disabled    = s.disabled,
 	)
@@ -145,9 +149,10 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 		composer,
 		skald.spacer(th.spacing.md),
 		controls,
+		width       = 660,
 		padding     = th.spacing.xl,
 		spacing     = 0,
-		cross_align = .Start,
+		cross_align = .Stretch,
 	)
 }
 
