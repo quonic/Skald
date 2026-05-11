@@ -13,6 +13,7 @@ skip [`widgets.md`](widgets.md)'s full reference for the common cases.
 | Password, masked input | `text_input` with `password = true` |
 | Search box that filters incrementally on every keystroke | `text_input` with `clear_button = true, escape_clears = true` |
 | Search box that fires on **Enter** (kick off a query / activate selection) | `search_field` |
+| Chat / comment composer (Enter sends, Shift+Enter newline) | `chat_input` |
 | Pick from a fixed set of options by typing | `combobox` |
 | Numeric value (qty, price, count) | `number_input` |
 

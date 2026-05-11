@@ -3630,6 +3630,109 @@ search_field :: proc(
 	)
 }
 
+// chat_input is the multi-line composer for chat / comment-box style
+// surfaces. Same relationship to `text_input` as `search_field` has:
+// it wraps `text_input(multiline = true, wrap = true)` and re-wires the
+// Enter key so the app can distinguish "send message" from "newline."
+//
+// Key bindings:
+//   • Enter        — fires `on_submit(current_value)`. Suppressed when
+//                    the value is empty (after `strings.trim_space`),
+//                    so empty-send is a no-op and callers don't need
+//                    to gate it.
+//   • Shift+Enter  — inserts a newline (delegated to text_input's
+//                    multiline path).
+//   • Ctrl+Enter   — also fires `on_submit` — Slack/Discord muscle
+//                    memory.
+//
+// `on_submit` receives the current value as its sole argument so the
+// app doesn't have to round-trip through state to read it. The
+// composer does NOT clear itself on submit — the app decides (handy
+// for optimistic rendering: clear on the resulting message-sent Msg).
+//
+// `max_lines` caps the auto-grow height. The composer starts at one
+// line and grows with the user's newlines up to `max_lines`, after
+// which it scrolls internally. Word-wrap-induced visual growth past
+// the line count isn't included in the auto-grow math today —
+// long lines will scroll inside the box rather than expand it.
+chat_input :: proc(
+	ctx:         ^Ctx($Msg),
+	value:       string,
+	on_change:   proc(new_value: string) -> Msg,
+	on_submit:   proc(value: string) -> Msg,
+	id:          Widget_ID = 0,
+	placeholder: string    = "",
+	width:       f32       = 0,
+	max_lines:   int       = 8,
+	font_size:   f32       = 0,
+	padding:     [2]f32    = {0, 0},
+	bg:          Color     = {},
+	fg:          Color     = {},
+	border:      Color     = {},
+	invalid:     bool      = false,
+	error:       string    = "",
+	disabled:    bool      = false,
+) -> View {
+	th := ctx.theme
+
+	// Resolve the id up front so we can hit-test focus for the submit
+	// path and then hand the same id to text_input. Same trick as
+	// search_field — otherwise text_input's auto-id counter hands out a
+	// fresh id and desyncs the two views.
+	id := widget_resolve_id(ctx, id)
+
+	// Intercept Enter BEFORE text_input runs and sees it as a newline
+	// insertion. Shift+Enter is left alone so the multiline path
+	// handles it normally. Ctrl+Enter is treated as a regular Enter
+	// (both submit). Empty values short-circuit so submit is a no-op
+	// on a blank composer.
+	if !disabled && widget_has_focus(ctx, id) && .Enter in ctx.input.keys_pressed {
+		shift := .Shift in ctx.input.modifiers
+		if !shift {
+			if len(strings.trim_space(value)) > 0 {
+				send(ctx, on_submit(value))
+			}
+			// Consume Enter so text_input's multiline path doesn't
+			// also insert a newline on the same key event.
+			ctx.input.keys_pressed -= {.Enter}
+		}
+	}
+
+	// Auto-grow height: one line per "\n" in the value, capped at
+	// `max_lines`. Word-wrap-induced lines aren't counted; the
+	// resulting box scrolls internally if a wrapped line overflows.
+	fs := font_size
+	if fs == 0 { fs = th.font.size_md }
+	line_h := fs + 4   // matches text_input's per-line glyph row height
+	pad_y  := padding.y
+	if pad_y == 0 { pad_y = th.spacing.sm }
+	nl_count := strings.count(value, "\n")
+	visible_lines := nl_count + 1
+	if visible_lines < 1         { visible_lines = 1 }
+	if visible_lines > max_lines { visible_lines = max_lines }
+	height := f32(visible_lines) * line_h + 2 * pad_y
+
+	ph := placeholder
+	if len(ph) == 0 { ph = "Message…" }
+
+	return text_input(ctx, value, on_change,
+		id          = id,
+		placeholder = ph,
+		width       = width,
+		height      = height,
+		font_size   = font_size,
+		padding     = padding,
+		bg          = bg,
+		fg          = fg,
+		border      = border,
+		multiline   = true,
+		wrap        = true,
+		invalid     = invalid,
+		error       = error,
+		disabled    = disabled,
+	)
+}
+
 // --- text editing helpers ---
 //
 // All of these allocate into context.temp_allocator so the new string is

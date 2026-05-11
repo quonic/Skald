@@ -444,6 +444,28 @@ an in-memory list with no Enter behaviour, use `text_input` with
 `clear_button = true, escape_clears = true` directly — same
 affordances, no `on_submit` requirement.
 
+### chat_input
+
+```odin
+chat_input(ctx, value, on_change, on_submit: proc(value: string) -> Msg,
+           placeholder = "Message…", max_lines = 8, ...)
+```
+
+Multi-line composer for chat / comment-box surfaces. Wraps
+`text_input(multiline = true, wrap = true)` and re-wires Enter so
+the app can distinguish "send" from "newline":
+
+- **Enter** — fires `on_submit(value)`. Empty values are no-ops, so
+  apps don't have to gate.
+- **Shift+Enter** — inserts a newline.
+- **Ctrl+Enter** — also fires `on_submit` (Slack/Discord muscle
+  memory).
+
+Auto-grows from one line up to `max_lines` based on newline count;
+beyond `max_lines` the field scrolls internally. The composer does
+**not** clear itself on submit — the app decides (handy for
+optimistic message rendering: clear on the resulting send-Msg).
+
 ### number_input
 
 ```odin
