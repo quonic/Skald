@@ -547,7 +547,7 @@ Default placeholder comes from `ctx.labels.select_placeholder`
 combobox(ctx, value: string, options: []string,
          on_change: proc(new: string) -> Msg,
          placeholder = "", filter = true, free_form = false,
-         disabled = false, max_chars = 0, width = 0)
+         disabled = false, max_chars = 0, max_rows = 8, width = 0)
 ```
 
 Text-input trigger with a filtered dropdown. Typing narrows the list
@@ -564,10 +564,18 @@ when it isn't an option. Email entry with suggestions, tag inputs,
 and similar "suggestions are helpers, not a constraint" flows fit
 this shape.
 
+`max_rows` caps the visible dropdown height in rows. The dropdown
+always shows the full filtered option set — when there are more
+than `max_rows` options, the overflow is scrollable (mouse wheel,
+scrollbar, keyboard auto-scroll keeps the highlight in view), not
+silently dropped. Default 8 fits comfortably under most triggers;
+bump it for known-large catalogues (model pickers, country lists)
+or trim it for tight layouts.
+
 Escape cancels (blurs without committing). Clicking outside the
 trigger or popover also dismisses.
 
-**Example: `examples/00_gallery` (Selection section).**
+**Example: `examples/00_gallery` (Selection section); `examples/43_chat_input`'s timezone picker exercises the scrollable >max_rows path.**
 
 ### segmented
 

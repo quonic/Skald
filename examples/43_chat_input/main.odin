@@ -46,13 +46,27 @@ Clear_All_Pressed :: struct{}
 Seed_CRLF_Pressed :: struct{}
 Tz_Changed        :: distinct string
 
+// >8 entries on purpose so the combobox dropdown exercises the
+// scrollable path (max_rows defaults to 8; the rest should be
+// reachable by mouse wheel or keyboard nav, not silently dropped).
 TIMEZONES := [?]string{
 	"Europe/London",
 	"Europe/Paris",
+	"Europe/Berlin",
+	"Europe/Madrid",
+	"Europe/Stockholm",
 	"America/New_York",
+	"America/Chicago",
+	"America/Denver",
 	"America/Los_Angeles",
+	"America/Sao_Paulo",
+	"Africa/Cairo",
 	"Asia/Tokyo",
+	"Asia/Shanghai",
+	"Asia/Singapore",
+	"Asia/Kolkata",
 	"Australia/Sydney",
+	"Pacific/Auckland",
 }
 
 // A long string with literal \r\n separators, mimicking text loaded

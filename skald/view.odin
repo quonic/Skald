@@ -5270,6 +5270,13 @@ _combobox_impl :: proc(
 	free_form:   bool      = false,
 	disabled:   bool      = false,
 	max_chars:   int       = 0,
+	// max_rows caps the visible dropdown height in rows. When the
+	// filtered option count exceeds this, the dropdown becomes
+	// scrollable (mouse wheel, scrollbar, keyboard auto-scroll) and
+	// rows past the cap stay reachable. Default 8 keeps the visual
+	// baseline for short lists; bump it for known-large catalogues
+	// (model pickers, country lists, …).
+	max_rows:    int       = 8,
 ) -> (view: View, new_value: string, changed: bool) {
 	th := ctx.theme
 	id := widget_resolve_id(ctx, id)
@@ -5300,6 +5307,15 @@ _combobox_impl :: proc(
 		st.cursor_pos  = 0
 		st.open        = true
 		st.drag_donor  = 0 // highlight index stored here
+		// Reset dropdown scroll to top on every open so the user
+		// always sees options from the start of the (possibly
+		// re-filtered) list. Filter-typed changes also reset
+		// highlight to 0, and the keyboard auto-scroll branch later
+		// brings the viewport along — both paths converge at top-of-
+		// list when the user starts fresh.
+		sst := widget_get(ctx, widget_make_sub_id(id, 1), .Scroll)
+		sst.scroll_y = 0
+		widget_set(ctx, widget_make_sub_id(id, 1), sst)
 	}
 	if !focused && len(st.text_buffer) > 0 {
 		delete(st.text_buffer)
@@ -5343,9 +5359,19 @@ _combobox_impl :: proc(
 	opt_h       := fs + 2 * th.spacing.sm + 6
 	overlay_pad := f32(4)
 	BORDER_W    := f32(1)
-	visible_max := min(len(visible), 8)
+	visible_max := min(len(visible), max_rows)
 	overlay_h   := 2*(overlay_pad + BORDER_W) + f32(visible_max) * opt_h
 	overlay_w   := trigger_rect.w if trigger_rect.w > 0 else tr_w
+	needs_scroll := len(visible) > max_rows
+	dropdown_scroll_id := widget_make_sub_id(id, 1)
+	// Dropdown scroll offset (only meaningful when needs_scroll).
+	// Used by the mouse hit-test below so a scrolled dropdown maps
+	// click-y to the right row. Also kept handy for the keyboard
+	// auto-scroll write later in this proc.
+	dropdown_scroll_y: f32 = 0
+	if needs_scroll {
+		dropdown_scroll_y = ctx.widgets.states[dropdown_scroll_id].scroll_y
+	}
 	// Only compute an overlay rect (and therefore a mouse_over_overlay
 	// hit-test) when the popover is actually open. A closed combobox
 	// would otherwise eat clicks whose target sits inside the *phantom*
@@ -5456,10 +5482,13 @@ _combobox_impl :: proc(
 
 	// Mouse-hover tracks the highlighted option so the focus ring follows
 	// the cursor — native combobox convention. Keyboard nav still updates
-	// it too; whichever moved last wins.
+	// it too; whichever moved last wins. `dropdown_scroll_y` shifts the
+	// row layout up when the dropdown is scrollable, so we add it to the
+	// relative y to recover the *content* coordinate before dividing by
+	// the row height.
 	if st.open && mouse_over_overlay {
 		content_y := overlay_rect.y + overlay_pad + BORDER_W
-		rel_y := ctx.input.mouse_pos.y - content_y
+		rel_y := ctx.input.mouse_pos.y - content_y + dropdown_scroll_y
 		idx := int(rel_y / opt_h)
 		if idx >= 0 && idx < len(visible) {
 			highlight = idx
@@ -5469,7 +5498,7 @@ _combobox_impl :: proc(
 	// Option-row click (must run before the overlay-click consume below).
 	if st.open && ctx.input.mouse_released[.Left] && mouse_over_overlay {
 		content_y := overlay_rect.y + overlay_pad + BORDER_W
-		rel_y := ctx.input.mouse_pos.y - content_y
+		rel_y := ctx.input.mouse_pos.y - content_y + dropdown_scroll_y
 		idx := int(rel_y / opt_h)
 		if idx >= 0 && idx < len(visible) {
 			new_value, changed = options[visible[idx]], true
@@ -5486,6 +5515,31 @@ _combobox_impl :: proc(
 	}
 	st.cursor_pos = cursor
 	st.drag_donor = highlight
+
+	// Keyboard auto-scroll: when the highlight moves out of the visible
+	// window, nudge the dropdown's scroll widget so the highlighted row
+	// is on screen. We write to the sub-widget's state directly here so
+	// the scroll builder later in this frame picks it up via its own
+	// widget_get. Mouse wheel scrolling is handled by skald.scroll
+	// internally — no extra work here. A filter/edit that resets
+	// highlight to 0 naturally lands at scroll_y=0 through this same
+	// branch.
+	if st.open && needs_scroll {
+		sst := widget_get(ctx, dropdown_scroll_id, .Scroll)
+		vp_h_inner := f32(max_rows) * opt_h
+		hl_top := f32(highlight) * opt_h
+		hl_bot := hl_top + opt_h
+		new_scr := sst.scroll_y
+		if hl_top < sst.scroll_y {
+			new_scr = hl_top
+		} else if hl_bot > sst.scroll_y + vp_h_inner {
+			new_scr = hl_bot - vp_h_inner
+		}
+		if new_scr != sst.scroll_y {
+			sst.scroll_y = new_scr
+			widget_set(ctx, dropdown_scroll_id, sst)
+		}
+	}
 
 	// Popover fade-in. Tween state resets while closed so each open
 	// fades from 0 again; mid-tween the anim helper wakes the next frame.
@@ -5543,10 +5597,17 @@ _combobox_impl :: proc(
 	}
 
 	// Dropdown rows. Highlight tracks `drag_donor`; hovered-row follows
-	// mouse position so visual + keyboard highlight stay in sync.
+	// mouse position so visual + keyboard highlight stay in sync. We
+	// build every visible[] entry — if there are more than `max_rows`
+	// of them, the rows are wrapped in `scroll` below so the overflow
+	// is reachable, not silently dropped.
 	rows := make([dynamic]View, 0, len(visible), context.temp_allocator)
-	visible_count := min(len(visible), 8)
-	for vi in 0 ..< visible_count {
+	row_w := overlay_w - 2*(overlay_pad + BORDER_W)
+	// When the dropdown scrolls, the scrollbar gutter eats some width
+	// from the inner content area — pre-trim so rows don't render
+	// underneath the bar.
+	if needs_scroll { row_w -= 10 } // matches scroll.odin's SCROLLBAR_GUTTER
+	for vi in 0 ..< len(visible) {
 		opt_idx := visible[vi]
 		label   := options[opt_idx]
 		is_hl   := vi == highlight
@@ -5554,7 +5615,7 @@ _combobox_impl :: proc(
 		if is_hl { row_bg = th.color.selection }
 		append(&rows, col(
 			text(label, th.color.fg, fs),
-			width       = overlay_w - 2*(overlay_pad + BORDER_W),
+			width       = row_w,
 			height      = opt_h,
 			padding     = th.spacing.sm,
 			main_align  = .Center,
@@ -5563,7 +5624,24 @@ _combobox_impl :: proc(
 			radius      = th.radius.sm,
 		))
 	}
-	inner := col(..rows[:],
+	rows_view: View
+	if needs_scroll {
+		// Vertical viewport sized to exactly `max_rows` rows. The
+		// scroll widget handles wheel events, the scrollbar visual,
+		// and click-to-scroll on the track. Keyboard auto-scroll is
+		// driven by the pre-write above.
+		inner_w := overlay_w - 2*(overlay_pad + BORDER_W)
+		rows_view = scroll(ctx,
+			{inner_w, f32(max_rows) * opt_h},
+			col(..rows[:], spacing = 0, cross_align = .Stretch),
+			id = dropdown_scroll_id,
+		)
+	} else {
+		// Short list — render rows directly, no scroll machinery.
+		rows_view = col(..rows[:], spacing = 0, cross_align = .Stretch)
+	}
+	inner := col(
+		rows_view,
 		spacing     = 0,
 		padding     = overlay_pad,
 		width       = overlay_w - 2*BORDER_W,
@@ -5608,12 +5686,14 @@ combobox_simple :: proc(
 	free_form:   bool      = false,
 	disabled:   bool      = false,
 	max_chars:   int       = 0,
+	max_rows:    int       = 8,
 ) -> View {
 	view, new_value, changed := _combobox_impl(
 		ctx, value, options,
 		id = id, width = width, placeholder = placeholder,
 		filter = filter, free_form = free_form,
 		disabled = disabled, max_chars = max_chars,
+		max_rows = max_rows,
 	)
 	if changed { send(ctx, on_change(new_value)) }
 	return view
@@ -5632,12 +5712,14 @@ combobox_payload :: proc(
 	free_form:   bool      = false,
 	disabled:   bool      = false,
 	max_chars:   int       = 0,
+	max_rows:    int       = 8,
 ) -> View {
 	view, new_value, changed := _combobox_impl(
 		ctx, value, options,
 		id = id, width = width, placeholder = placeholder,
 		filter = filter, free_form = free_form,
 		disabled = disabled, max_chars = max_chars,
+		max_rows = max_rows,
 	)
 	if changed { send(ctx, on_change(payload, new_value)) }
 	return view

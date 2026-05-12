@@ -17,6 +17,19 @@ bug fixes bump the patch.
   short-circuit so submit is a no-op on a blank composer. See
   `examples/43_chat_input` for the contract in action.
 
+### Added
+
+- **`combobox` `max_rows` parameter + scrollable overflow.** The
+  dropdown previously hard-capped at 8 visible rows and silently
+  dropped anything past index 7 — visible only via filter-as-you-
+  type, which most users wouldn't discover. Two changes: the cap is
+  now a parameter (`max_rows: int = 8`, same visual default), and
+  options beyond it are reachable via mouse wheel, scrollbar, or
+  keyboard nav (Up/Down auto-scrolls the viewport to keep the
+  highlighted row visible). Reset to top on open and on filter-
+  driven highlight reset. Reported via the cross-agent thread by an
+  app with a 15-entry model picker.
+
 ### Fixed
 
 - **`widget_get` no longer leaves the store holding freed pointers.**
