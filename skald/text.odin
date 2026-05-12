@@ -1,6 +1,7 @@
 package skald
 
 import "core:fmt"
+import "core:strings"
 import fs "vendor:fontstash"
 import vk "vendor:vulkan"
 
@@ -9,6 +10,20 @@ import vk "vendor:vulkan"
 // text rendering out of the box without shipping assets.
 @(private)
 INTER_VARIABLE :: #load("assets/InterVariable.ttf", []byte)
+
+// INTER_BOLD / INTER_ITALIC / INTER_BOLD_ITALIC are static-weight Inter
+// faces baked into the binary alongside the variable file. Same OFL-1.1
+// licence (see assets/InterVariable-OFL.txt). fontstash can't drive
+// OpenType variation axes, so the only way to render proper bold and
+// italic is separate font handles — these power `rich_text`'s emphasis
+// spans (per-span `weight = .Bold` and `italic = true`) without
+// requiring apps to ship their own copies.
+@(private)
+INTER_BOLD :: #load("assets/Inter-Bold.ttf", []byte)
+@(private)
+INTER_ITALIC :: #load("assets/Inter-Italic.ttf", []byte)
+@(private)
+INTER_BOLD_ITALIC :: #load("assets/Inter-BoldItalic.ttf", []byte)
 
 // ATLAS_SIZE is the initial glyph atlas edge length in pixels. Chosen large
 // enough that typical desktop UIs (a handful of sizes across Latin) never
@@ -31,6 +46,13 @@ Font :: distinct int
 Text :: struct {
 	fs:           fs.FontContext,
 	default_font: Font,
+	// Inter static-weight handles for rich_text's emphasis spans.
+	// Registered alongside `default_font` in `text_init`; loading them
+	// is one-shot metadata work — the glyphs themselves are only
+	// rasterised into the atlas the first time a span requests them.
+	bold_font:        Font,
+	italic_font:      Font,
+	bold_italic_font: Font,
 
 	atlas_image:  vk.Image,
 	atlas_mem:    vk.DeviceMemory,
@@ -60,6 +82,27 @@ text_init :: proc(t: ^Text, r: ^Renderer) -> (ok: bool) {
 	t.default_font = Font(fs.AddFontMem(&t.fs, "inter", INTER_VARIABLE, false))
 	if int(t.default_font) < 0 {
 		fmt.eprintln("skald: failed to load embedded Inter font")
+		return
+	}
+
+	// Register the static emphasis weights. AddFontMem only parses the
+	// font tables — no atlas pages allocated yet — so this is cheap.
+	// Glyphs only enter the atlas the first time a renderer call asks
+	// for them, so apps that never use rich_text's emphasis pay
+	// ~nothing for these beyond the binary size.
+	t.bold_font = Font(fs.AddFontMem(&t.fs, "inter-bold", INTER_BOLD, false))
+	if int(t.bold_font) < 0 {
+		fmt.eprintln("skald: failed to load embedded Inter Bold")
+		return
+	}
+	t.italic_font = Font(fs.AddFontMem(&t.fs, "inter-italic", INTER_ITALIC, false))
+	if int(t.italic_font) < 0 {
+		fmt.eprintln("skald: failed to load embedded Inter Italic")
+		return
+	}
+	t.bold_italic_font = Font(fs.AddFontMem(&t.fs, "inter-bold-italic", INTER_BOLD_ITALIC, false))
+	if int(t.bold_italic_font) < 0 {
+		fmt.eprintln("skald: failed to load embedded Inter Bold Italic")
 		return
 	}
 
@@ -245,6 +288,22 @@ text_on_update :: proc(data: rawptr, dirty: [4]f32, _: rawptr) {
 // always loaded and is the default for `draw_text`.
 font_default :: proc(r: ^Renderer) -> Font {
 	return r.text.default_font
+}
+
+// font_bold / font_italic / font_bold_italic return the handles of the
+// embedded Inter static weights — what `rich_text` selects internally
+// when a span has `weight = .Bold` and/or `italic = true`. Apps that
+// want to use these weights outside rich_text (e.g. a header in a
+// bespoke layout) can pass the handle directly to `text(...)` /
+// `draw_text(...)` like any other font.
+font_bold :: proc(r: ^Renderer) -> Font {
+	return r.text.bold_font
+}
+font_italic :: proc(r: ^Renderer) -> Font {
+	return r.text.italic_font
+}
+font_bold_italic :: proc(r: ^Renderer) -> Font {
+	return r.text.bold_italic_font
 }
 
 // font_load registers a TTF/OTF font from memory. The bytes are borrowed —
@@ -448,6 +507,39 @@ split_lines :: proc(s: string) -> []string {
 	return lines[:]
 }
 
+// Visible width of a `\t` character, in space-widths of the current
+// font. Hardcoded for v1; matches common editor defaults. Can become a
+// per-call argument later if anyone needs 2 or 8.
+TAB_WIDTH :: 4
+
+// expand_tabs replaces each `\t` in `s` with `TAB_WIDTH` spaces and
+// returns the result. Returns the input unchanged (no allocation) if
+// `s` contains no tabs — the overwhelming common case for label /
+// paragraph text. Allocates into context.temp_allocator when expansion
+// is needed, so the returned string is valid for the rest of the
+// frame.
+//
+// Used by `text()` (via wrap_text and the no-wrap render path) so a
+// tab in user-supplied content renders as a visible run of whitespace
+// instead of fontstash's missing-glyph tofu. For monospace code the
+// visual lands at the standard 4-column indent; for proportional text
+// the tab is roughly 4 space-widths wide. This is the simple model —
+// no column-aligned tab stops, no per-paragraph reset. App code that
+// needs editor-grade tab handling can pre-process its strings.
+expand_tabs :: proc(s: string) -> string {
+	if !strings.contains_rune(s, '\t') { return s }
+	sb := strings.builder_make(context.temp_allocator)
+	strings.builder_grow(&sb, len(s) + TAB_WIDTH)
+	for i in 0..<len(s) {
+		if s[i] == '\t' {
+			for _ in 0..<TAB_WIDTH { strings.write_byte(&sb, ' ') }
+		} else {
+			strings.write_byte(&sb, s[i])
+		}
+	}
+	return strings.to_string(sb)
+}
+
 // wrap_text breaks `text` into lines so no line's measured width exceeds
 // `max_width`. The break algorithm is word-boundary (single spaces),
 // matching what a typical desktop paragraph engine does for UI copy.
@@ -517,7 +609,13 @@ wrap_text :: proc(
 	// Honour hard breaks first (cross-platform: \n, \r\n, \r), then
 	// word-wrap each paragraph to fit max_width.
 	paragraphs := split_lines(text)
-	for para in paragraphs {
+	for para_raw in paragraphs {
+		// Tabs in `para_raw` get expanded to TAB_WIDTH spaces so the
+		// word-wrap measure below sees actual visible width — and so
+		// the lines returned to the renderer don't contain literal
+		// `\t` (which fontstash would draw as a missing-glyph tofu).
+		// `expand_tabs` no-ops on tab-free input.
+		para := expand_tabs(para_raw)
 		if len(para) == 0 {
 			// Preserve empty paragraphs so vertical spacing in the
 			// source survives.
@@ -571,4 +669,244 @@ wrap_text :: proc(
 	out := lines[:]
 	if use_cache { r.wrap_cache[key] = out }
 	return out
+}
+
+// Rich_Segment is one styled run inside a single visual line of a
+// `rich_text` widget — a contiguous byte range from one Text_Span
+// plus its measured width and x position within the line. Generated
+// by `wrap_rich_text`; consumed by layout's View_Rich_Text render
+// path which iterates segments per line and draws each in the span's
+// font / size / colour.
+Rich_Segment :: struct {
+	span_idx:   int,
+	byte_start: int,
+	byte_end:   int,
+	x_offset:   f32,
+	width:      f32,
+}
+
+// Rich_Line is one visual line in a wrapped rich-text paragraph.
+// `ascent` is the max ascent across the line's segments — used as the
+// baseline offset so spans with different font sizes share a common
+// glyph-baseline. `height` is the max line-height across the line's
+// segments; consecutive lines stack by this amount.
+Rich_Line :: struct {
+	segments: []Rich_Segment,
+	width:    f32,
+	ascent:   f32,
+	height:   f32,
+}
+
+// Atom is one indivisible unit in the wrap pass: a word run, a space,
+// or a hard newline. Word atoms get broken between (not within) by the
+// greedy fit-and-fall-back-to-last-space algorithm; spaces double as
+// the break opportunities; breaks force a new line.
+@(private)
+Rich_Atom :: struct {
+	span_idx:   int,
+	byte_start: int,
+	byte_end:   int,
+	width:      f32,
+	ascent:     f32,
+	line_h:     f32,
+	kind:       Rich_Atom_Kind,
+}
+
+@(private)
+Rich_Atom_Kind :: enum {
+	Word,
+	Space,
+	Break,
+}
+
+// wrap_rich_text breaks `spans` into visual lines no wider than
+// `max_width` (set to 0 for no-wrap → one line per hard newline).
+// The algorithm:
+//
+//   1. Atomise. Walk each span byte-by-byte producing word / space /
+//      break atoms. Atoms carry their measured width in their span's
+//      font + size, plus the ascent / line-height they contribute.
+//   2. Layout. Greedy fit: try to place each atom on the current
+//      line. When a word would overflow, rewind to the last space on
+//      the line, finalise (trimming the trailing space), and resume
+//      with the post-space tail.
+//   3. Emit. Group consecutive same-span atoms in each line into
+//      Rich_Segments and stash them in a Rich_Line with the line's
+//      width + max ascent + max line-height.
+//
+// Returned slice + nested slices all live in context.temp_allocator
+// — valid for the rest of the frame.
+wrap_rich_text :: proc(
+	r:         ^Renderer,
+	spans:     []Text_Span,
+	base_size: f32,
+	base_font: Font,
+	max_width: f32,
+) -> []Rich_Line {
+	lines: [dynamic]Rich_Line
+	lines.allocator = context.temp_allocator
+
+	default_ascent: f32 = 0
+	default_line_h: f32 = base_size + 4
+	if r != nil {
+		default_ascent = text_ascent(r, base_size, base_font)
+		_, default_line_h = measure_text(r, "", base_size, base_font)
+	}
+
+	if r == nil || len(spans) == 0 {
+		append(&lines, Rich_Line{ascent = default_ascent, height = default_line_h})
+		return lines[:]
+	}
+
+	// 1) Atomise.
+	atoms: [dynamic]Rich_Atom
+	atoms.allocator = context.temp_allocator
+	for sp, sp_idx in spans {
+		if len(sp.str) == 0 { continue }
+		fnt := rich_span_font(r, base_font, sp)
+		sz  := rich_span_size(base_size, sp)
+		asc := text_ascent(r, sz, fnt)
+		_, lh := measure_text(r, "", sz, fnt)
+		space_w, _ := measure_text(r, " ", sz, fnt)
+		s := sp.str
+		i := 0
+		for i < len(s) {
+			ch := s[i]
+			if ch == '\n' {
+				append(&atoms, Rich_Atom{
+					span_idx = sp_idx,
+					byte_start = i, byte_end = i + 1,
+					width = 0, ascent = asc, line_h = lh,
+					kind = .Break,
+				})
+				i += 1
+				continue
+			}
+			if ch == ' ' {
+				append(&atoms, Rich_Atom{
+					span_idx = sp_idx,
+					byte_start = i, byte_end = i + 1,
+					width = space_w, ascent = asc, line_h = lh,
+					kind = .Space,
+				})
+				i += 1
+				continue
+			}
+			word_start := i
+			for i < len(s) && s[i] != ' ' && s[i] != '\n' { i += 1 }
+			ww, _ := measure_text(r, s[word_start:i], sz, fnt)
+			append(&atoms, Rich_Atom{
+				span_idx = sp_idx,
+				byte_start = word_start, byte_end = i,
+				width = ww, ascent = asc, line_h = lh,
+				kind = .Word,
+			})
+		}
+	}
+
+	// 2) Layout. We rebuild the current line as a sub-slice of atoms,
+	// then flush + reset when a break or overflow happens.
+	cur: [dynamic]Rich_Atom
+	cur.allocator = context.temp_allocator
+	cur_w: f32 = 0
+
+	flush :: proc(lines: ^[dynamic]Rich_Line, cur: ^[dynamic]Rich_Atom, default_a, default_h: f32) {
+		// Trim trailing spaces — they shouldn't take horizontal slot
+		// on a wrapped line, matching how editors / browsers render.
+		for len(cur) > 0 && cur[len(cur)-1].kind == .Space {
+			pop(cur)
+		}
+		if len(cur) == 0 {
+			append(lines, Rich_Line{ascent = default_a, height = default_h})
+			return
+		}
+		// Build segments: group consecutive atoms with the same
+		// span_idx and adjacent byte ranges into one Rich_Segment.
+		segs: [dynamic]Rich_Segment
+		segs.allocator = context.temp_allocator
+		x: f32 = 0
+		max_a, max_h: f32
+		for atom in cur {
+			if atom.ascent > max_a { max_a = atom.ascent }
+			if atom.line_h > max_h { max_h = atom.line_h }
+			if len(segs) > 0 {
+				last := &segs[len(segs) - 1]
+				if last.span_idx == atom.span_idx && last.byte_end == atom.byte_start {
+					last.byte_end = atom.byte_end
+					last.width   += atom.width
+					x            += atom.width
+					continue
+				}
+			}
+			append(&segs, Rich_Segment{
+				span_idx   = atom.span_idx,
+				byte_start = atom.byte_start,
+				byte_end   = atom.byte_end,
+				x_offset   = x,
+				width      = atom.width,
+			})
+			x += atom.width
+		}
+		if max_a == 0 { max_a = default_a }
+		if max_h == 0 { max_h = default_h }
+		append(lines, Rich_Line{
+			segments = segs[:],
+			width    = x,
+			ascent   = max_a,
+			height   = max_h,
+		})
+	}
+
+	for atom in atoms {
+		if atom.kind == .Break {
+			flush(&lines, &cur, default_ascent, default_line_h)
+			clear(&cur)
+			cur_w = 0
+			continue
+		}
+		// Overflow check: if this word would push past max_width and
+		// the current line isn't empty, try to break before it. We
+		// only break on Word atoms (spaces extending past max_width
+		// stay on the current line and get trimmed in flush).
+		if max_width > 0 && atom.kind == .Word && len(cur) > 0 && cur_w + atom.width > max_width {
+			// Find last space in cur to break at.
+			last_space := -1
+			for j := len(cur) - 1; j >= 0; j -= 1 {
+				if cur[j].kind == .Space { last_space = j; break }
+			}
+			if last_space >= 0 {
+				// Tail = everything after the space (the partial word
+				// that started before this atom).
+				tail_start := last_space + 1
+				tail: [dynamic]Rich_Atom
+				tail.allocator = context.temp_allocator
+				for j := tail_start; j < len(cur); j += 1 {
+					append(&tail, cur[j])
+				}
+				// Drop tail (and the space itself stays — flush trims it).
+				resize(&cur, last_space + 1)
+				flush(&lines, &cur, default_ascent, default_line_h)
+				clear(&cur)
+				cur_w = 0
+				for t in tail {
+					append(&cur, t)
+					cur_w += t.width
+				}
+			} else {
+				// No space on the line — break before this word anyway.
+				flush(&lines, &cur, default_ascent, default_line_h)
+				clear(&cur)
+				cur_w = 0
+			}
+		}
+		append(&cur, atom)
+		cur_w += atom.width
+	}
+
+	// Final line (may be empty if the only content was a trailing
+	// break, in which case we still want the empty visual line so the
+	// blank row survives).
+	flush(&lines, &cur, default_ascent, default_line_h)
+
+	return lines[:]
 }

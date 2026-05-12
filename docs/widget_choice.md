@@ -14,6 +14,8 @@ skip [`widgets.md`](widgets.md)'s full reference for the common cases.
 | Search box that filters incrementally on every keystroke | `text_input` with `clear_button = true, escape_clears = true` |
 | Search box that fires on **Enter** (kick off a query / activate selection) | `search_field` |
 | Chat / comment composer (Enter sends, Shift+Enter newline) | `chat_input` |
+| Mixed-style paragraph (bold / italic / inline code, no links) | `rich_text` |
+| Mixed-style paragraph **with clickable links** | `rich_text_links` |
 | Pick from a fixed set of options by typing | `combobox` |
 | Numeric value (qty, price, count) | `number_input` |
 

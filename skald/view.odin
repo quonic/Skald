@@ -87,6 +87,7 @@ View :: union {
 	View_Deferred,
 	View_Canvas,
 	View_Spinner,
+	View_Rich_Text,
 }
 
 // Stack_Direction picks which axis a Stack lays its children along. Row
@@ -152,6 +153,64 @@ View_Text :: struct {
 	size:      f32,
 	font:      Font,
 	max_width: f32,
+}
+
+// Text_Weight names the typographic weight of a Text_Span. Two values
+// for v1 — Regular and Bold — matching what the bundled Inter static
+// faces support. An enum (not a bool) so additional weights can join
+// later (Medium, SemiBold, Black) without breaking call sites.
+Text_Weight :: enum {
+	Regular,
+	Bold,
+}
+
+// Text_Span is one styled run inside a `rich_text` widget. Spans flow
+// in document order and wrap as one paragraph; the widget walks them
+// rune-by-rune to break at word boundaries across span seams. Per-span
+// styling overrides the base; zero-valued fields inherit.
+//
+//   str       — the run's text. Empty spans are skipped during layout.
+//   color     — glyph colour. {} inherits the widget's `base` colour.
+//   size      — font size in logical px. 0 inherits the widget's size.
+//   font      — typeface handle. 0 falls back to the static Inter
+//               variant picked from (weight, italic): Regular →
+//               default, Bold → font_bold(r), Italic → font_italic(r),
+//               Bold+Italic → font_bold_italic(r). Pass an explicit
+//               handle (e.g. a mono face from `font_load`) to override.
+//   weight    — .Regular or .Bold.
+//   italic    — true for italic styling.
+//   bg        — optional fill rectangle drawn behind the glyphs. The
+//               renderer pads it ~2 px horizontally so inline code
+//               chips don't kiss the text. {} = no background.
+//   underline — draws a 1-px rule under the baseline.
+//   link      — non-empty marks this span as clickable. Reserved for
+//               step 7 — the v1 skeleton renders link styling but does
+//               not yet fire callbacks.
+Text_Span :: struct {
+	str:       string,
+	color:     Color,
+	size:      f32,
+	font:      Font,
+	weight:    Text_Weight,
+	italic:    bool,
+	bg:        Color,
+	underline: bool,
+	link:      string,
+}
+
+// View_Rich_Text carries a list of spans plus the paragraph-level
+// defaults that fill in their inheritances, and the pre-computed
+// visual lines `wrap_rich_text` produced during the view build.
+// Layout iterates `lines` for both measure and render — no wrap work
+// repeats per pass within a single frame.
+View_Rich_Text :: struct {
+	spans:     []Text_Span,
+	lines:     []Rich_Line,
+	base:      Color,
+	size:      f32,
+	font:      Font,
+	max_width: f32,
+	id:        Widget_ID,
 }
 
 // View_Stack lays children out in a row or column. Children contribute
@@ -792,6 +851,173 @@ text :: proc(
 		font      = font,
 		max_width = max_width,
 	}
+}
+
+// rich_text lays out a paragraph of styled spans. Each span carries its
+// own colour, weight, italic flag, optional inline background, and
+// optional underline; the runs flow in document order and word-wrap as
+// one paragraph when `max_width > 0` (no wrap when 0). Use it for
+// markdown rendering, inline code chips, syntax-highlighted code
+// blocks, or any place where one paragraph mixes styles and a stack of
+// `text()` widgets would break wrapping at the run boundaries.
+//
+// `base` is the fallback colour for spans whose own `color` is zero.
+// `size` and `font` are the paragraph-level defaults that fill in
+// span-level zeros the same way.
+//
+// Link support (per-span `link != ""` firing a callback) lands in a
+// later commit on this branch — until then link spans render with
+// their styling (underline, custom colour) but don't fire on click.
+//
+// Convenience constructors keep call sites readable for the common
+// shapes: `span()`, `span_bold()`, `span_italic()`, `span_code()`,
+// `span_link()`. The plain `Text_Span` struct stays available for
+// full per-span control.
+rich_text :: proc(
+	ctx:       ^Ctx($Msg),
+	spans:     []Text_Span,
+	base:      Color,
+	size:      f32 = 14,
+	font:      Font = 0,
+	max_width: f32 = 0,
+	id:        Widget_ID = 0,
+) -> View {
+	rid := widget_resolve_id(ctx, id)
+	// Copy the spans into the per-frame arena. Callers typically pass
+	// a stack-allocated compound literal (`[]Text_Span{span(...), …}`);
+	// the slice header points at stack memory that gets reused after
+	// `view` returns, before layout/render runs. Same pattern `col`
+	// uses for its children — see col's body. Backing strings inside
+	// each Text_Span are usually .rodata literals and stable; what we
+	// need to preserve is the slice of Text_Span structs itself.
+	copied := make([]Text_Span, len(spans), context.temp_allocator)
+	copy(copied, spans)
+	// Compute wrap once now so layout's view_size + render_view share
+	// the same Rich_Line slice (free per-frame "cache" — no double
+	// wrap walk needed). wrap_rich_text returns at least one line even
+	// for empty input so view_size can always read lines[0].height.
+	resolved_size := size if size > 0 else 14
+	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
+	return View_Rich_Text{
+		spans     = copied,
+		lines     = lines,
+		base      = base,
+		size      = size,
+		font      = font,
+		max_width = max_width,
+		id        = rid,
+	}
+}
+
+// rich_text_links is the linkable variant of `rich_text`. Same shape
+// otherwise, plus an `on_link_click` callback that fires whenever
+// the user releases a left-click on a span with a non-empty `link`
+// field. The callback receives the link target string the app put in
+// the span; the meaning of that string is up to the app (URL,
+// mailto, internal route id, message id, …).
+//
+// Mechanics: rich_text's render path publishes per-link screen-space
+// rects to the widget's persistent state. This builder reads that
+// stamp from last frame, hit-tests the current mouse position, and
+// requests a Pointer cursor while a link is hovered; on
+// mouse_released[.Left] over a link it sends `on_link_click(link)`
+// into ctx.msgs. One-frame-lag for the rect stamp — imperceptible
+// for hover / click feel and avoids a second render pass.
+//
+// Split into its own variant (not folded into `rich_text` via a
+// nilable callback) because Odin's polymorphic-nil-default
+// limitation forbids `on_link_click: proc(link: string) -> Msg =
+// nil` in a `proc($Msg)`. Same reason `search_field` is split out
+// from `text_input`.
+rich_text_links :: proc(
+	ctx:           ^Ctx($Msg),
+	spans:         []Text_Span,
+	base:          Color,
+	on_link_click: proc(link: string) -> Msg,
+	size:          f32 = 14,
+	font:          Font = 0,
+	max_width:     f32 = 0,
+	id:            Widget_ID = 0,
+) -> View {
+	v := rich_text(ctx, spans, base, size, font, max_width, id)
+	rv := v.(View_Rich_Text)
+	// Hover + click dispatch against last-frame's rect stamp.
+	hovered := link_rect_at(ctx, rv.id, ctx.input.mouse_pos)
+	if len(hovered) > 0 {
+		cursor_request(ctx, .Pointer)
+		if ctx.input.mouse_released[.Left] {
+			send(ctx, on_link_click(hovered))
+		}
+	}
+	return v
+}
+
+// span constructs a Text_Span carrying just `str` — color and other
+// fields inherit from the rich_text widget's base.
+span :: proc(str: string, color: Color = {}) -> Text_Span {
+	return Text_Span{str = str, color = color}
+}
+
+// span_bold marks a run as bold. The renderer picks the bundled Inter
+// Bold (or Inter Bold Italic when paired with italic) automatically;
+// pass an explicit `font` only if the app loaded a custom bold face.
+span_bold :: proc(str: string, color: Color = {}) -> Text_Span {
+	return Text_Span{str = str, color = color, weight = .Bold}
+}
+
+// span_italic marks a run as italic. Renderer selects Inter Italic
+// (or Bold Italic if paired with .Bold) automatically.
+span_italic :: proc(str: string, color: Color = {}) -> Text_Span {
+	return Text_Span{str = str, color = color, italic = true}
+}
+
+// span_code styles a run as inline code — a monospace face (caller
+// passes the handle from a `font_load` of their preferred mono font;
+// Skald doesn't bundle one for the framework's font roster) plus a
+// subtle background fill. Callers can omit `font` if they want the
+// default regular face but still get the background chip.
+span_code :: proc(str: string, font: Font = 0, color: Color = {}, bg: Color = {}) -> Text_Span {
+	return Text_Span{str = str, color = color, font = font, bg = bg}
+}
+
+// span_link marks a run as a hyperlink. The renderer styles it with
+// the underline by default; click activation lands later on this
+// branch. `target` becomes the value handed to `on_link_click` when
+// rich_text fires the message.
+span_link :: proc(str, target: string, color: Color = {}) -> Text_Span {
+	return Text_Span{str = str, color = color, link = target, underline = true}
+}
+
+// rich_span_font picks the actual font handle a Text_Span renders
+// with: caller-supplied if non-zero, otherwise one of the bundled
+// Inter static weights based on (weight, italic). When `base_font` is
+// non-zero and the span asks for Regular non-italic, the base wins
+// over the global default so a rich_text widget passing a custom
+// regular face uses it.
+@(private)
+rich_span_font :: proc(r: ^Renderer, base_font: Font, sp: Text_Span) -> Font {
+	if sp.font != 0 { return sp.font }
+	if sp.weight == .Bold && sp.italic { return r.text.bold_italic_font }
+	if sp.weight == .Bold              { return r.text.bold_font        }
+	if sp.italic                       { return r.text.italic_font      }
+	if base_font != 0                  { return base_font               }
+	return r.text.default_font
+}
+
+// rich_span_color falls back to the widget's `base` colour when the
+// span didn't set its own.
+@(private)
+rich_span_color :: proc(base: Color, sp: Text_Span) -> Color {
+	if sp.color.a == 0 { return base }
+	return sp.color
+}
+
+// rich_span_size falls back to the widget's base size when the span
+// didn't set its own.
+@(private)
+rich_span_size :: proc(base_size: f32, sp: Text_Span) -> f32 {
+	if sp.size <= 0 { return base_size }
+	return sp.size
 }
 
 // col stacks children vertically. All layout knobs are named arguments so

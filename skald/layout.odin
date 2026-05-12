@@ -95,19 +95,34 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		// produce multiple visible rows so user-supplied multi-line
 		// text doesn't render as missing-glyph tofu. The strings scan
 		// is cheap relative to fontstash shaping and avoids allocating
-		// a slice for the common single-line case.
+		// a slice for the common single-line case. `expand_tabs`
+		// no-ops when the string contains no \t, so the common case
+		// stays allocation-free.
 		if strings.contains_any(vv.str, "\n\r") {
 			lines := split_lines(vv.str)
 			_, lh := measure_text(r, "", vv.size, vv.font)
 			max_w: f32
 			for line in lines {
-				w, _ := measure_text(r, line, vv.size, vv.font)
+				w, _ := measure_text(r, expand_tabs(line), vv.size, vv.font)
 				if w > max_w { max_w = w }
 			}
 			return {max_w, lh * f32(len(lines))}
 		}
-		w, h := measure_text(r, vv.str, vv.size, vv.font)
+		w, h := measure_text(r, expand_tabs(vv.str), vv.size, vv.font)
 		return {w, h}
+
+	case View_Rich_Text:
+		// `wrap_rich_text` already populated `lines` during the view
+		// build. Width: max line width when wrapped, else single
+		// line's width. Height: sum of per-line heights.
+		max_w: f32 = 0
+		total_h: f32 = 0
+		for ln in vv.lines {
+			if ln.width > max_w { max_w = ln.width }
+			total_h += ln.height
+		}
+		if vv.max_width > 0 && max_w < vv.max_width { max_w = vv.max_width }
+		return {max_w, total_h}
 
 	case View_Stack:
 		// If the stack declares an explicit width/height, use it directly
@@ -338,11 +353,66 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			_, lh := measure_text(r, "", vv.size, vv.font)
 			y := origin.y
 			for line in lines {
-				draw_text(r, line, origin.x, y + ascent, vv.color, vv.size, vv.font)
+				draw_text(r, expand_tabs(line), origin.x, y + ascent, vv.color, vv.size, vv.font)
 				y += lh
 			}
 		} else {
-			draw_text(r, vv.str, origin.x, origin.y + ascent, vv.color, vv.size, vv.font)
+			draw_text(r, expand_tabs(vv.str), origin.x, origin.y + ascent, vv.color, vv.size, vv.font)
+		}
+
+	case View_Rich_Text:
+		// Walk the pre-computed Rich_Lines. Each segment draws as one
+		// `draw_text` call on the substring of its span. The line's
+		// `ascent` is the max ascent across its segments so mixed-size
+		// runs share a glyph baseline. Spans with `bg.a > 0` get a
+		// rounded chip painted behind the glyphs (inline-code look);
+		// `underline = true` adds a 1-px rule beneath; spans with a
+		// non-empty `link` get their screen-space rect stamped to
+		// Widget_State.link_rects for next frame's hover/click hit-
+		// test (consumed by rich_text_links).
+		base_size := vv.size if vv.size > 0 else 14
+		BG_PAD_X     :: f32(3)
+		BG_PAD_Y     :: f32(1)
+		BG_RADIUS    :: f32(3)
+		UNDERLINE_OFF :: f32(2) // px below baseline
+		// Per-frame link-rect collection. Built up across the segment
+		// walk; stamped to widget state at the end of the render so
+		// next frame's builder can hover/click against it.
+		link_rects: [dynamic]Link_Rect
+		link_rects.allocator = context.temp_allocator
+		y := origin.y
+		for ln in vv.lines {
+			baseline := y + ln.ascent
+			for seg in ln.segments {
+				sp := vv.spans[seg.span_idx]
+				fnt := rich_span_font(r, vv.font, sp)
+				sz  := rich_span_size(base_size, sp)
+				col := rich_span_color(vv.base, sp)
+				x   := origin.x + seg.x_offset
+				if sp.bg.a > 0 {
+					chip := Rect{x - BG_PAD_X, y - BG_PAD_Y, seg.width + 2*BG_PAD_X, ln.height + 2*BG_PAD_Y}
+					draw_rect(r, chip, sp.bg, BG_RADIUS)
+				}
+				if seg.byte_end > seg.byte_start && seg.byte_end <= len(sp.str) {
+					sub := sp.str[seg.byte_start:seg.byte_end]
+					draw_text(r, sub, x, baseline, col, sz, fnt)
+				}
+				if sp.underline {
+					draw_rect(r,
+						Rect{x, baseline + UNDERLINE_OFF, seg.width, 1},
+						col, 0)
+				}
+				if len(sp.link) > 0 {
+					append(&link_rects, Link_Rect{
+						rect = Rect{x, y, seg.width, ln.height},
+						link = sp.link,
+					})
+				}
+			}
+			y += ln.height
+		}
+		if r.widgets != nil && vv.id != 0 {
+			link_rects_stamp(r.widgets, vv.id, link_rects[:])
 		}
 
 	case View_Stack:

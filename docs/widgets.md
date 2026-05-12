@@ -269,6 +269,79 @@ reports the combined height. This means user-supplied multi-line
 strings (chat messages, log lines, pasted Windows content) render
 correctly without any caller-side splitting.
 
+Tab characters expand to four spaces of visible width — no
+column-aligned tab stops, just a fixed advance — so pasted code
+blocks and log lines don't render `\t` as a missing-glyph tofu.
+
+### rich_text
+
+```odin
+rich_text(ctx, spans: []Text_Span, base: Color,
+          size: f32 = 14, font: Font = 0,
+          max_width: f32 = 0, id: Widget_ID = 0)
+
+rich_text_links(ctx, spans, base,
+                on_link_click: proc(link: string) -> Msg,
+                size, font, max_width, id)
+```
+
+One paragraph of mixed-style text. Each `Text_Span` carries its own
+colour, weight (`Regular` / `Bold`), italic flag, optional inline
+background fill, optional underline, and an optional `link` target.
+Wrap (when `max_width > 0`) operates *across* span seams — bold,
+italic, and inline-code runs flow into one another and word-break
+only at spaces, never inside a run. Bundled Inter Bold / Italic /
+Bold Italic faces are picked automatically per span.
+
+Convenience constructors keep call sites readable:
+
+```odin
+spans := []skald.Text_Span{
+    skald.span("Markdown rendering needs "),
+    skald.span_bold("bold"),
+    skald.span(", "),
+    skald.span_italic("italic"),
+    skald.span(", "),
+    skald.Text_Span{
+        str = "inline code",
+        bg  = theme.color.surface,
+    },
+    skald.span(", and links like "),
+    skald.span_link("the docs", "https://example.com"),
+    skald.span("."),
+}
+skald.rich_text(ctx, spans, theme.color.fg, max_width = 480)
+```
+
+**Inline code chips.** Any span with `bg.a > 0` gets a rounded
+background painted behind its glyphs (3 px horizontal inset, 1 px
+vertical pad, 3 px corner radius). The chip resets per visual line
+so a wrapped chip on two lines paints two rects, not one stretched
+across.
+
+**Links.** Switch from `rich_text` to `rich_text_links` and pass
+`on_link_click: proc(link: string) -> Msg`. Spans with non-empty
+`link` swap the cursor to a hand-pointer on hover and fire the
+callback on left-click release. The `link` string is whatever the
+app wants — URL, mailto, internal route id, message id — Skald
+just plumbs it back. `rich_text_links` is a separate proc (not
+`rich_text` with a nilable callback) because Odin's polymorphic
+nil-default limit forbids a `proc() -> $Msg = nil` default — same
+reason `search_field` is split out from `text_input`.
+
+**Picking the right text widget:**
+
+| Want | Use |
+|---|---|
+| Single styled run | `text` |
+| Mixed weight / colour / size, no inline chips, no links | `rich_text` |
+| Same plus clickable link spans | `rich_text_links` |
+| Editable text | `text_input` |
+
+**Example:** `examples/44_rich_text` — bold / italic mixing, mixed
+sizes + colours, multi-line wrapped paragraph, inline-code chip,
+and two clickable links with cursor swap.
+
 ### rect
 
 ```odin

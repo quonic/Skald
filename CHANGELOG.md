@@ -8,6 +8,43 @@ bug fixes bump the patch.
 
 ### Added
 
+- **`rich_text` / `rich_text_links` widgets** — one paragraph of
+  styled spans that wrap as a single block. Each `Text_Span` carries
+  its own colour / weight / italic / inline-code background /
+  underline / link, and the wrap path word-breaks *across span
+  seams* so a long sentence with mixed bold + italic + inline-code
+  flows into a normal multi-line paragraph instead of fragmenting
+  into separate widgets. Bundled Inter Bold / Italic / Bold Italic
+  faces are baked into the binary alongside the existing
+  InterVariable; the renderer picks the right face per span
+  automatically. `span_bold` / `span_italic` / `span_code` /
+  `span_link` keep call sites readable. `rich_text_links` is the
+  variant with click dispatch — `on_link_click: proc(link: string)
+  -> Msg` fires on left-click release over a link span, and the OS
+  cursor swaps to a pointer/hand on hover via the new
+  `cursor_request` API. Split into two procs (not nilable callback)
+  because of Odin's polymorphic-nil-default limit. Demo in
+  `examples/44_rich_text` covers every shape: mixed weight/italic,
+  mixed size+colour, multi-line wrap, inline-code chip, and two
+  clickable links with a status line that shows the most recent
+  target.
+- **`cursor_request(ctx, shape)` API.** `Cursor_Shape` enum
+  (`Default` / `Pointer` / `Text` / `Crosshair` / `Move` / four
+  resize directions / `Not_Allowed`) backed by `SDL_CreateSystemCursor`
+  with a per-shape lazy-allocated cache. Widgets call
+  `cursor_request` from their view to claim a cursor shape while
+  hovered; the run loop applies once per frame, last writer wins.
+  First consumer is `rich_text_links`'s hover-pointer; future
+  consumers will be text_input's I-beam and resize handles.
+- **`Inter-Bold` / `Inter-Italic` / `Inter-BoldItalic` font assets**
+  (~1.24 MB total, OFL-1.1, same licence as InterVariable). Loaded
+  via `font_bold(r)` / `font_italic(r)` / `font_bold_italic(r)` for
+  apps that want to use the static weights outside `rich_text`.
+- **Tab handling in `text` and `wrap_text`.** Tabs in user-supplied
+  strings now expand to 4 spaces of visible width instead of
+  rendering as a missing-glyph tofu. Applies to both the wrap and
+  no-wrap render paths. Simple model (no editor-grade column-aligned
+  tab stops); apps that need true tab stops pre-process their input.
 - **`chat_input` widget** — multi-line composer with the chat-app key
   contract: **Enter** submits, **Shift+Enter** inserts a newline,
   **Ctrl+Enter** also submits. Wraps `text_input(multiline = true,

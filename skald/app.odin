@@ -823,6 +823,12 @@ run :: proc(app: App($State, $Msg)) {
 		// shared state. No DeviceWaitIdle between targets.
 		had_focus = false
 		primary := r.targets[0]
+		// `frame_cursor` accumulates the cursor shape any window's view
+		// asked for. The OS only has one mouse cursor across all
+		// windows, and whichever window the pointer is over will be the
+		// only one with a non-default request — last writer wins works
+		// without window-by-window filtering.
+		frame_cursor: Cursor_Shape = .Default
 		for t in r.targets {
 			r.cur = t
 			t_widgets := t.widgets
@@ -931,7 +937,17 @@ run :: proc(app: App($State, $Msg)) {
 			// frame's view asked for.
 			window_set_text_input(t_w, t_widgets.wants_text_input)
 			had_focus = had_focus || t_widgets.wants_text_input
+
+			// Cursor is a single OS-level resource — accumulate any
+			// non-default request across windows and apply once below.
+			if t_widgets.wants_cursor != .Default {
+				frame_cursor = t_widgets.wants_cursor
+			}
 		}
+
+		// One SDL_SetCursor per frame is plenty. cursor_apply_shape
+		// no-ops when the shape matches the last call.
+		cursor_apply_shape(frame_cursor)
 
 		// Bench sampling + last_render live outside the per-target loop
 		// so we count one frame per iteration of the outer loop rather

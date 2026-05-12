@@ -1,5 +1,6 @@
 package skald
 
+import "core:strings"
 import "core:time"
 
 // Widget_ID is a per-app identifier for a stateful widget. Two widgets
@@ -88,6 +89,11 @@ Widget_Kind :: enum u8 {
 	// `cursor_pos`, and the highlighted-item index in `drag_donor`
 	// (same convention as combobox).
 	Command_Palette,
+	// Rich_Text owns the `link_rects` published by `rich_text`'s
+	// render pass — per-link segment screen-space rects + cloned link
+	// strings. The builder (rich_text_links) reads them next frame
+	// for hover-cursor + click dispatch.
+	Rich_Text,
 }
 
 // Widget_State is the per-widget scratch record the framework stashes
@@ -195,6 +201,84 @@ Widget_State :: struct {
 	// clicks the prev/next header arrows. Ignored by other widget kinds.
 	nav_year:    int,
 	nav_month:   int,
+	// link_rects is rich_text's per-segment link hit-test list. Stamped
+	// during render after layout has settled positions; consumed by the
+	// next frame's builder for hover-cursor + click dispatch. Allocated
+	// on the persistent heap (context.allocator) because the slot must
+	// survive the frame arena reset. The strings inside each entry are
+	// also persistent (cloned on stamp, freed on cleanup). Nil when no
+	// rich_text with link spans has rendered into this id.
+	link_rects: ^[dynamic]Link_Rect,
+}
+
+// Link_Rect is one published-rect entry from rich_text: the
+// screen-space rect of a link segment plus the link target string the
+// app supplied. Stored persistently on Widget_State.link_rects so the
+// next frame's builder can hit-test mouse position and fire clicks.
+Link_Rect :: struct {
+	rect: Rect,
+	link: string,
+}
+
+// link_rects_free releases the persistent storage for a widget's
+// link_rects list, including the cloned link target strings. Safe to
+// call on nil. Used by widget_get cleanup, widget_store_evict_stale,
+// and widget_store_destroy alongside the parallel cleanups for
+// undo / virtual_heights / text_buffer.
+@(private)
+link_rects_free :: proc(rects: ^[dynamic]Link_Rect) {
+	if rects == nil { return }
+	for rr in rects^ {
+		if len(rr.link) > 0 { delete(rr.link) }
+	}
+	delete(rects^)
+	free(rects)
+}
+
+// link_rects_stamp replaces the widget's link_rects list with `entries`,
+// cloning each link string into the persistent allocator so it
+// survives the frame arena reset. Called from rich_text's render path
+// once layout has resolved per-segment positions. Pass an empty slice
+// to clear the list (e.g. when a rich_text instance lost all its link
+// spans this frame).
+@(private)
+link_rects_stamp :: proc(ws: ^Widget_Store, id: Widget_ID, entries: []Link_Rect) {
+	st := ws.states[id]
+	if st.link_rects == nil {
+		st.link_rects  = new([dynamic]Link_Rect)
+		st.link_rects^ = make([dynamic]Link_Rect)
+	} else {
+		// Free previous frame's cloned strings before clearing.
+		for rr in st.link_rects^ {
+			if len(rr.link) > 0 { delete(rr.link) }
+		}
+		clear(st.link_rects)
+	}
+	for entry in entries {
+		append(st.link_rects, Link_Rect{
+			rect = entry.rect,
+			link = strings.clone(entry.link),
+		})
+	}
+	// Refresh frame-stamp + kind so the eviction sweep doesn't kill
+	// the slot between renders. Kind is set to .Rich_Text; widget_get
+	// from the builder will match it.
+	st.kind       = .Rich_Text
+	st.last_frame = ws.frame
+	ws.states[id] = st
+}
+
+// link_rect_at returns the link target (if any) under `pos` for the
+// widget at `id`, looking at the rect list stamped during last
+// frame's render. Returns "" when no link is hovered. Used by
+// rich_text_links's builder for cursor / click dispatch.
+link_rect_at :: proc(ctx: ^Ctx($Msg), id: Widget_ID, pos: [2]f32) -> string {
+	st := ctx.widgets.states[id]
+	if st.link_rects == nil { return "" }
+	for rr in st.link_rects^ {
+		if rect_contains_point(rr.rect, pos) { return rr.link }
+	}
+	return ""
 }
 
 // Widget_Store owns per-widget state plus single-focus bookkeeping. One
@@ -253,6 +337,14 @@ Widget_Store :: struct {
 	// as seamless as a native app.
 	focus_return_id:   Widget_ID,
 	wants_text_input:  bool,
+	// wants_cursor is what shape the OS pointer should be wearing this
+	// frame. Reset to .Default at the top of each frame; widgets that
+	// own a hovered hit-region call `cursor_request(ctx, .Pointer)` (or
+	// .Text / .Move / a resize direction) during their view to assert
+	// the shape. Last writer wins — the topmost hovered widget calls
+	// last in the render walk and gets to claim the cursor. The run
+	// loop applies it via SDL once per frame, after view has settled.
+	wants_cursor:      Cursor_Shape,
 	// frame is a monotonically increasing counter bumped by
 	// widget_store_frame_reset. Widget_State carries the frame value it
 	// was last written at; widget_get compares against (frame - 1) to
@@ -449,6 +541,7 @@ widget_store_destroy :: proc(ws: ^Widget_Store) {
 			free(st.virtual_heights)
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
+		link_rects_free(st.link_rects)
 	}
 	delete(ws.states)
 	delete(ws.focusables)
@@ -463,10 +556,39 @@ widget_store_destroy :: proc(ws: ^Widget_Store) {
 // auto-IDs start from zero again and per-frame flags (like wants_text_input)
 // clear. The persistent fields — state map, focused_id — are untouched.
 @(private)
+// Cursor_Shape names the small subset of OS cursor styles Skald
+// widgets need to express. Maps 1:1 onto SDL's SystemCursor catalogue,
+// minus the ones we don't have a use case for yet. Default is the
+// zero value so `Widget_Store.wants_cursor` resets to the regular
+// arrow at the top of each frame without explicit reset code beyond
+// the assignment.
+Cursor_Shape :: enum {
+	Default,
+	Pointer,        // hand — links, clickable spans
+	Text,           // I-beam — over an editable text region
+	Crosshair,      // precision — canvas drawing
+	Move,           // four-pointed — drag a panel / window region
+	NS_Resize,      // vertical bar drag
+	EW_Resize,      // horizontal bar drag
+	NWSE_Resize,    // top-left↔bottom-right corner drag
+	NESW_Resize,    // top-right↔bottom-left corner drag
+	Not_Allowed,    // operation refused — disabled drop target
+}
+
+// cursor_request asks the run loop to display `shape` for the rest of
+// this frame. Call it from inside a widget's view when the pointer is
+// over a region whose semantics warrant a non-default shape — a link
+// span, a text input, a resize handle. Last call in the view walk
+// wins so overlay widgets correctly override widgets underneath.
+cursor_request :: proc(ctx: ^Ctx($Msg), shape: Cursor_Shape) {
+	ctx.widgets.wants_cursor = shape
+}
+
 widget_store_frame_reset :: proc(ws: ^Widget_Store) {
 	ws.auto_id                = 0
 	ws.auto_id_scope          = 0
 	ws.wants_text_input       = false
+	ws.wants_cursor           = .Default
 	ws.next_frame_deadline_ns = 0
 	ws.frame                 += 1
 	clear(&ws.focusables)
@@ -522,6 +644,7 @@ widget_store_evict_stale :: proc(ws: ^Widget_Store) {
 			free(st.virtual_heights)
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
+		link_rects_free(st.link_rects)
 		delete_key(&ws.states, id)
 	}
 }
@@ -701,6 +824,7 @@ widget_get :: proc(ctx: ^Ctx($Msg), id: Widget_ID, kind: Widget_Kind) -> Widget_
 			free(st.virtual_heights)
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
+		link_rects_free(st.link_rects)
 		st = Widget_State{kind = kind}
 		// Persist the reset state back to the store. Otherwise the
 		// map entry still holds the now-freed pointers (undo /

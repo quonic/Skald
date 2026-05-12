@@ -657,6 +657,49 @@ cursor_set_visible :: proc(visible: bool) {
 	}
 }
 
+// Cursor cache. SDL_CreateSystemCursor allocates per call, so we
+// memoise once-per-shape and let SDL clean them up on shutdown (the
+// pointers are valid for the program's lifetime). nil entries mean
+// "not yet requested" — populated lazily inside `cursor_apply_shape`.
+@(private)
+g_cursors: [Cursor_Shape]^sdl3.Cursor
+
+// cursor_apply_shape pushes `shape` to the OS via SDL. Lazy-creates the
+// underlying SDL_Cursor on first use of each shape so apps that never
+// touch a particular cursor never allocate it. Called by the run loop
+// once per frame after the view + render pass have settled, with
+// whatever shape `cursor_request` was last called with. A no-op when
+// the requested shape matches what we set last call, so we don't
+// spam SDL.
+@(private)
+cursor_apply_shape :: proc(shape: Cursor_Shape) {
+	@(static) last: Cursor_Shape = .Default
+	@(static) initialised: bool
+	if initialised && shape == last { return }
+	initialised = true
+	last = shape
+	if g_cursors[shape] == nil {
+		sys: sdl3.SystemCursor
+		#partial switch shape {
+		case .Default:     sys = .DEFAULT
+		case .Pointer:     sys = .POINTER
+		case .Text:        sys = .TEXT
+		case .Crosshair:   sys = .CROSSHAIR
+		case .Move:        sys = .MOVE
+		case .NS_Resize:   sys = .NS_RESIZE
+		case .EW_Resize:   sys = .EW_RESIZE
+		case .NWSE_Resize: sys = .NWSE_RESIZE
+		case .NESW_Resize: sys = .NESW_RESIZE
+		case .Not_Allowed: sys = .NOT_ALLOWED
+		case:              sys = .DEFAULT
+		}
+		g_cursors[shape] = sdl3.CreateSystemCursor(sys)
+	}
+	if g_cursors[shape] != nil {
+		_ = sdl3.SetCursor(g_cursors[shape])
+	}
+}
+
 // clipboard_set writes `text` to the system clipboard. UTF-8 in, UTF-8 out.
 // Returns true on success; callers typically don't branch on the result — a
 // clipboard failure is not actionable from inside the UI.

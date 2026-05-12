@@ -102,6 +102,10 @@ init :: proc() -> State {
 	out := State{}
 	append(&out.messages, "Welcome to the chat_input smoke test.")
 	append(&out.messages, "Type below and hit Enter. Shift+Enter for a newline.")
+	// Tab smoke test: \t should render as 4 spaces of width, not a
+	// missing-glyph tofu. Visible as the "col1 / col2 / col3" run
+	// having three discrete gaps between the labels.
+	append(&out.messages, "tab demo:\tcol1\tcol2\tcol3")
 	// One ~30 KB message exercises the wrap_text cost path during the
 	// bench, mirroring the boc-next repro. Toggle off if you just want
 	// to test the chat_input controls without the perf trace.
