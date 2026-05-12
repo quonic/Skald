@@ -84,6 +84,22 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`virtual_list_variable` sticky-bottom no longer lags by one chunk.**
+  When the app's view kept setting `scroll_y` to a sentinel each
+  frame to pin the bottom (the standard "follow the streaming reply"
+  pattern), `scroll_advance` clamped against `content_h_pre` — the
+  sum of *cached* heights from the previous frame. If a visible row
+  (e.g. the streaming assistant bubble) grew this frame, the
+  post-measure `max_off` increased, but `scroll_y` had already been
+  clamped to the stale value. Result: scroll_y was one chunk behind
+  the true bottom, top-of-viewport rows snapped each chunk arrival.
+  The existing re-anchor block only covered rows above
+  `first_visible`; growth inside `[first_visible, last)` was
+  invisible to it. Now: snapshot `was_at_bottom` from the
+  pre-measure clamp, and after re-measure either re-anchor (as
+  before, when not at bottom) *or* snap `scroll_y` to the new
+  `max_off_post` (when at bottom). Sticky-bottom apps now hold the
+  bottom edge exactly.
 - **Scroll content no longer flickers on sub-pixel offsets.** `View_Scroll`
   applied its `offset_y` directly as a fractional render origin —
   `content_h` is a sum of float per-row heights, so any sticky-bottom

@@ -10239,6 +10239,17 @@ virtual_list_variable :: proc(
 	scroll_y := st2.scroll_y
 	if scroll_y < 0 { scroll_y = 0 }
 	dragging := st2.pressed
+	// Was the user pinned to the bottom going into this frame?
+	// scroll_advance has already clamped scroll_y against content_h_pre
+	// (last frame's cached heights), so `scroll_y == max_off_pre` is
+	// the post-clamp signal that the app's pre-clamp request was at
+	// or past the bottom. We snapshot this now and use it after the
+	// re-measure pass to keep scroll_y pinned even when this frame
+	// adds height to a visible streaming row that the pre-measure
+	// max_off didn't account for.
+	max_off_pre := content_h_pre - viewport.y
+	if max_off_pre < 0 { max_off_pre = 0 }
+	was_at_bottom := scroll_y >= max_off_pre - 0.5
 
 	// Locate the first visible row using the *old* heights. A linear
 	// scan is O(total_count) which stays acceptable into the low 6-
@@ -10332,14 +10343,33 @@ virtual_list_variable :: proc(
 	// pinned. Skip this while the user is dragging the thumb — their
 	// cursor-driven scroll_y already reflects where they want the
 	// content to be, and an extra nudge here just fights the drag.
+	//
+	// Special case: when the user was pinned to the bottom going in
+	// (sticky-bottom apps set scroll_y past max_off every frame), the
+	// "stay pinned to first_visible" goal is wrong — we want to track
+	// the *new* bottom that this frame's re-measure produced. Without
+	// this branch, growth of a visible row (the streaming-reply bubble
+	// sitting at the end of [first_visible, last)) leaves scroll_y one
+	// chunk behind the true bottom, top-of-viewport rows visibly snap
+	// each chunk arrival. With it, sticky-bottom holds exactly.
 	if !dragging {
-		anchor_offset_new: f32 = 0
-		for i in 0..<first_visible { anchor_offset_new += heights[i] }
-		delta := anchor_offset_new - offset_at_first_old
-		if delta != 0 {
-			scroll_y += delta
-			st2.scroll_y = scroll_y
-			widget_set(ctx, id, st2)
+		if was_at_bottom {
+			max_off_post := content_h - viewport.y
+			if max_off_post < 0 { max_off_post = 0 }
+			if max_off_post != scroll_y {
+				scroll_y = max_off_post
+				st2.scroll_y = scroll_y
+				widget_set(ctx, id, st2)
+			}
+		} else {
+			anchor_offset_new: f32 = 0
+			for i in 0..<first_visible { anchor_offset_new += heights[i] }
+			delta := anchor_offset_new - offset_at_first_old
+			if delta != 0 {
+				scroll_y += delta
+				st2.scroll_y = scroll_y
+				widget_set(ctx, id, st2)
+			}
 		}
 	}
 
