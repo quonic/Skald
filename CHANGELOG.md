@@ -19,6 +19,20 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`widget_get` no longer leaves the store holding freed pointers.**
+  The cleanup branch (kind-mismatch or stale-frame) freed the prior
+  occupant's heap state (`undo`, `virtual_heights`, `text_buffer`)
+  and reset a *local copy* of `Widget_State`, but never wrote that
+  reset state back to `ctx.widgets.states`. A caller that did
+  `widget_get` and early-returned without `widget_set` — a normal
+  pattern for read-only inspection paths — left the map entry
+  pointing at the just-freed heap. The next `widget_get` on the same
+  id read the same stale entry and re-entered the cleanup branch,
+  double-freeing. Now `widget_get` persists the reset state to the
+  map before returning so cleanup is idempotent regardless of
+  caller discipline. Reported by an external app via the cross-agent
+  thread (crash trace in `delete_dynamic_array` from a stale
+  `virtual_heights` slice).
 - **`wrap_text` is now memoised per frame.** `View_Text` gets walked
   twice every frame — once in `view_size` (layout measure) and once
   in `render_view` (paint) — and each walk previously re-ran the

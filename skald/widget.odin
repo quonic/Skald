@@ -702,6 +702,15 @@ widget_get :: proc(ctx: ^Ctx($Msg), id: Widget_ID, kind: Widget_Kind) -> Widget_
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
 		st = Widget_State{kind = kind}
+		// Persist the reset state back to the store. Otherwise the
+		// map entry still holds the now-freed pointers (undo /
+		// virtual_heights / text_buffer); a caller that early-returns
+		// without `widget_set`-ing — totally reasonable for read-only
+		// inspection paths — would let the next `widget_get` on the
+		// same id re-enter this branch and double-free. Writing back
+		// here makes cleanup idempotent regardless of caller
+		// discipline.
+		ctx.widgets.states[id] = st
 	}
 	return st
 }
