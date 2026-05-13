@@ -80,6 +80,12 @@ meant to exercise — the one-liners below are a jumping-off point.
 |---------|-----------------|
 | `38_multi_window` | `cmd_open_window` + `cmd_close_window`, dispatching per window via `ctx.window`, the `on_close` callback that fires for both programmatic and X-button close. The pattern for dock popovers, notifications, floating palettes. |
 
+### Theming
+
+| Example | What it teaches |
+|---------|-----------------|
+| `32_theme_follow` | Live theme swap end-to-end: seed from `system_theme()`, respond to `on_system_theme_change`, and pick from six palettes (Follow-OS, Dark, Light, Ocean, Forest, Rosewood) via `cmd_set_theme`. The recipe for any app that needs a Preferences panel or a runtime palette picker. |
+
 ### Fonts & icons
 
 | Example | What it teaches |

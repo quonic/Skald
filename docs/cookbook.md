@@ -941,8 +941,8 @@ skald.run(skald.App(State, Msg){
 ```
 
 The callback fires when the user flips dark/light at runtime so you
-can mirror it without a relaunch — re-read `theme_system()` and assign
-to `ctx.theme^` next frame.
+can mirror it without a relaunch — return `cmd_set_theme` from
+`update` with the new palette and the next frame paints with it.
 
 If you want the dark-or-light pick without the accent override (or
 need a fixed theme regardless of the OS), use `theme_dark()` /
@@ -967,15 +967,49 @@ professional defaults.
 
 ```odin
 case Theme_Toggled:
-    out.dark  = !out.dark
-    out.theme = skald.theme_dark() if out.dark else skald.theme_light()
-
-// in view:
-ctx.theme^ = s.theme
+    out.dark = !out.dark
+    new_theme := skald.theme_dark() if out.dark else skald.theme_light()
+    return out, skald.cmd_set_theme(Msg, new_theme)
 ```
 
-`ctx.theme^` assignment is how the app tells the framework which theme
-to use on a given frame.
+`cmd_set_theme` is the canonical way to swap palettes mid-session.
+The runtime owns one `Theme` value across frames; the command writes
+the new palette into that slot between frames, so the next `view`
+sees the new colours everywhere.
+
+See `examples/32_theme_follow` for a six-palette picker (Follow-OS +
+Dark + Light + three brand variants) wired through `cmd_set_theme`.
+
+### Multiple custom palettes
+
+`cmd_set_theme` lets you ship a "themes" menu without a window
+restart. Build each palette as a proc, dispatch on the user's pick
+from `update`:
+
+```odin
+Palette :: enum { Dark, Ocean, Forest }
+
+theme_for :: proc(p: Palette) -> skald.Theme {
+    switch p {
+    case .Dark:
+        return skald.theme_dark()
+    case .Ocean:
+        t := skald.theme_dark()
+        t.color.bg         = skald.rgb(0x0a1a26)
+        t.color.surface    = skald.rgb(0x102633)
+        t.color.primary    = skald.rgb(0x4cc9f0)
+        t.color.on_primary = skald.rgb(0x06141d)
+        return t
+    case .Forest:
+        // ...
+    }
+    return skald.theme_dark()
+}
+
+case Palette_Picked:
+    out.palette = p
+    return out, skald.cmd_set_theme(Msg, theme_for(p))
+```
 
 ---
 

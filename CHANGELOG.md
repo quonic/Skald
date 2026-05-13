@@ -14,9 +14,10 @@ bug fixes bump the patch.
   so the next `view` paints with the new palette. Cleaner than the
   previous "mutate `ctx.theme^` from inside `view`" pattern, which
   worked but broke the convention that state changes flow through
-  `update`. `examples/32_theme_follow` now uses the command path;
-  the in-view mutation still works for the rare case where the
-  app already lives there.
+  `update`. `examples/32_theme_follow` rebuilt around this: six
+  palettes (Follow-OS / Dark / Light / Ocean / Forest / Rosewood),
+  picker swatches, sample widgets so every surface slot is visible
+  during the swap. Cookbook "Theming" section rewritten to match.
 - **Keyboard `Key` enum: punctuation variants.** Added `Minus`,
   `Equals`, `Left_Bracket`, `Right_Bracket`, `Semicolon`,
   `Apostrophe`, `Comma`, `Period`, `Slash`, `Backslash`, `Grave`
