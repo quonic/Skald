@@ -44,6 +44,14 @@ Command :: struct($Msg: typeid) {
 	// inside `thread_op_spawn`. Heap-allocated (not temp-arena) — the
 	// worker thread may outlive the dispatch frame.
 	thread_op: rawptr,
+	// theme_op carries the new Theme to install for `.Set_Theme`
+	// commands. Pointer indirection (rather than embedding a Theme
+	// value in every Command) keeps the struct compact while still
+	// letting the dispatcher swap themes by simple assignment.
+	// Allocated into context.temp_allocator by `cmd_set_theme`;
+	// consumed by `process_command` the same frame the cmd is
+	// returned.
+	theme_op: ^Theme,
 }
 
 // Command_Kind discriminates a `Command`. `.None` is the zero value so
@@ -58,6 +66,10 @@ Command_Kind :: enum u8 {
 	Open_Window,
 	Close_Window,
 	Thread,
+	// Set_Theme swaps the active Theme on the next frame. Apps use it
+	// from update() to apply a theme-picker change immediately,
+	// without a restart. See `cmd_set_theme`.
+	Set_Theme,
 }
 
 // Window_Desc describes a window to be opened by `cmd_open_window`. Mirrors
@@ -168,6 +180,29 @@ cmd_now :: proc(msg: $Msg) -> Command(Msg) {
 	return Command(Msg){kind = .Now, msg = msg}
 }
 
+// cmd_set_theme swaps the app's active Theme on the next frame. The
+// run loop captures `app.theme` once at boot into a mutable local;
+// without this command apps had no way to point that local at a new
+// palette, so a theme-picker UI could update its own state but the
+// running frame kept the old colours until restart.
+//
+// Returned from `update` like any other command:
+//
+//     case Theme_Picked:
+//         out.theme_choice = v
+//         return out, skald.cmd_set_theme(Msg, theme_for(v))
+//
+// The new Theme is copied into the temp arena by this constructor
+// and consumed during the same frame's command dispatch — callers
+// don't need to keep `t` alive past the return statement. Effect
+// lands one frame later (the next view sees the new colours), so a
+// crossfade has to be sequenced by the app on top of this.
+cmd_set_theme :: proc($Msg: typeid, t: Theme) -> Command(Msg) {
+	p := new(Theme, context.temp_allocator)
+	p^ = t
+	return Command(Msg){kind = .Set_Theme, theme_op = p}
+}
+
 // cmd_delay schedules `msg` to be delivered after `seconds` have
 // elapsed. The delay is measured against wall-clock time; the runtime
 // polls pending delays at the top of every frame and releases any that
@@ -232,6 +267,7 @@ process_command :: proc(
 	io:               ^Io_State(Msg),
 	windows_pending:  ^[dynamic]Window_Op(Msg),
 	thread_pool:      ^Thread_Pool(Msg),
+	theme:            ^Theme,
 ) {
 	switch cmd.kind {
 	case .None:
@@ -243,7 +279,7 @@ process_command :: proc(
 		append(pending, Pending_Delay(Msg){fire_at_ns = fire, msg = cmd.msg})
 	case .Batch:
 		for child in cmd.children {
-			process_command(child, msgs, pending, io, windows_pending, thread_pool)
+			process_command(child, msgs, pending, io, windows_pending, thread_pool, theme)
 		}
 	case .Async:
 		process_async(cmd.async, io)
@@ -253,6 +289,10 @@ process_command :: proc(
 		}
 	case .Thread:
 		thread_op_spawn(cmd.thread_op, thread_pool)
+	case .Set_Theme:
+		if cmd.theme_op != nil && theme != nil {
+			theme^ = cmd.theme_op^
+		}
 	}
 }
 

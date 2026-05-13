@@ -992,7 +992,7 @@ run :: proc(app: App($State, $Msg)) {
 			for msg in frame_msgs {
 				new_state, cmd := app.update(state, msg)
 				state = new_state
-				process_command(cmd, &msgs, &pending, &io, &windows_pending, &tpool)
+				process_command(cmd, &msgs, &pending, &io, &windows_pending, &tpool, &th)
 			}
 			// Drain window-op requests between each msg batch so a follow-up
 			// `cmd_now` that reacts to a newly-opened window's id lands in

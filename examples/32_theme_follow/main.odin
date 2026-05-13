@@ -13,8 +13,7 @@ import "gui:skald"
 // `.Unknown`, in which case the app stays on whatever it started with.
 
 State :: struct {
-	theme:      skald.Theme,
-	sys_theme:  skald.System_Theme,
+	sys_theme: skald.System_Theme,
 }
 
 Msg :: union {
@@ -32,11 +31,7 @@ theme_for :: proc(sys: skald.System_Theme) -> skald.Theme {
 }
 
 init :: proc() -> State {
-	sys := skald.system_theme()
-	return State{
-		sys_theme = sys,
-		theme     = theme_for(sys),
-	}
+	return State{sys_theme = skald.system_theme()}
 }
 
 update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
@@ -44,17 +39,15 @@ update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
 	switch v in m {
 	case Theme_Changed:
 		out.sys_theme = skald.System_Theme(v)
-		out.theme     = theme_for(out.sys_theme)
+		// Tell the runtime to swap the active theme on the next
+		// frame. Cleaner than mutating `ctx.theme^` from view —
+		// state changes belong in update.
+		return out, skald.cmd_set_theme(Msg, theme_for(out.sys_theme))
 	}
 	return out, {}
 }
 
 view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
-	// Swap the active theme by writing through `ctx.theme^`. The runtime
-	// holds one Theme value across frames; mutating in-place at the top
-	// of `view` makes every child widget render against `state.theme`.
-	ctx.theme^ = s.theme
-
 	th := ctx.theme
 	label := fmt.tprintf("OS theme: %v", s.sys_theme)
 

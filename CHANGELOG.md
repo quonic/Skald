@@ -4,6 +4,26 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
+## Unreleased
+
+### Added
+
+- **`cmd_set_theme(Msg, theme)` — swap the active theme from
+  `update`.** The runtime owns one `Theme` value across frames;
+  this command writes the new theme into that slot between frames
+  so the next `view` paints with the new palette. Cleaner than the
+  previous "mutate `ctx.theme^` from inside `view`" pattern, which
+  worked but broke the convention that state changes flow through
+  `update`. `examples/32_theme_follow` now uses the command path;
+  the in-view mutation still works for the rare case where the
+  app already lives there.
+- **Keyboard `Key` enum: punctuation variants.** Added `Minus`,
+  `Equals`, `Left_Bracket`, `Right_Bracket`, `Semicolon`,
+  `Apostrophe`, `Comma`, `Period`, `Slash`, `Backslash`, `Grave`
+  with their SDL3 scancode mappings. Apps wiring shortcuts like
+  `Ctrl+=` / `Ctrl+-` (zoom) or `Ctrl+,` (preferences) no longer
+  need to fall back to text-event sniffing.
+
 ## 1.0.0-rc4 — 2026-05-12
 
 Two new text widgets, a handful of correctness fixes uncovered by
