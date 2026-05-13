@@ -1,0 +1,14 @@
+Third-party components bundled or required at runtime
+======================================================
+
+Skald bundles four faces of the Inter typeface family as embedded
+assets — InterVariable plus the static-weight Inter-Bold,
+Inter-Italic, and Inter-BoldItalic faces. All four ship under the
+same SIL Open Font License 1.1; the full licence text travels with
+the repository at:
+
+    skald/assets/InterVariable-OFL.txt
+
+Skald also depends on a number of third-party libraries; none impose
+additional obligations on Skald consumers, but they are gratefully
+acknowledged below. See README.md for the full list.

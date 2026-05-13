@@ -182,6 +182,7 @@ build.sh/.bat   build one example into ./build/ (use RELEASE=1 to strip -debug)
 bench.sh        run the canonical bench suite
 CHANGELOG.md    per-release notes
 LICENSE         zlib
+NOTICE          bundled-Inter + third-party acknowledgements
 PLATFORMS.md    per-platform setup + known quirks
 ```
 
@@ -209,6 +210,10 @@ Permissive: commercial use, modification, and redistribution are all
 fine, with three light restrictions (don't misrepresent origin, mark
 altered versions, keep the notice). Matches Odin's own license for
 zero ecosystem friction.
+
+Bundled-asset and third-party acknowledgements live in [`NOTICE`](NOTICE)
+(separated from `LICENSE` so GitHub's auto-detector recognises the
+zlib header cleanly).
 
 The bundled Inter typeface — InterVariable plus the static-weight
 Inter-Bold, Inter-Italic, and Inter-BoldItalic faces used by
