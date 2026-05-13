@@ -42,6 +42,12 @@ Font :: distinct int
 // One instance lives inside the Renderer. The sampler is owned by
 // Pipeline (shared across the atlas and every cached image); Text just
 // carries the image and view.
+//
+// `runa_state` is the dispatch flag for the experimental pure-Odin
+// runa text engine: nil → fontstash drives everything (the path that
+// has shipped since 1.0); non-nil → runa drives. Currently always nil
+// (Phase 1a stubs); set non-nil once the runa wiring lands so the
+// public APIs route to the new code path.
 @(private)
 Text :: struct {
 	fs:           fs.FontContext,
@@ -66,6 +72,10 @@ Text :: struct {
 	needs_rebuild: bool, // atlas was resized → recreate GPU image
 	dirty_rect:    [4]f32,
 	has_dirty:     bool,
+
+	// Optional runa-backed state. nil → fontstash backend; non-nil →
+	// public APIs route to the runa equivalents in text_runa.odin.
+	runa_state: ^Text_Runa,
 }
 
 @(private)
@@ -112,12 +122,26 @@ text_init :: proc(t: ^Text, r: ^Renderer) -> (ok: bool) {
 	// image.
 	text_upload_region(t, r, 0, 0, int(t.atlas_w), int(t.atlas_h))
 
+	// Optionally try the runa backend. When the SKALD_RUNA build define
+	// is true, `text_init_runa` attempts to bring up the pure-Odin text
+	// engine; on success it allocates the Text_Runa state and assigns
+	// it to t.runa_state, flipping every public API to the runa path.
+	// On failure we keep fontstash. Phase 1a stub always returns false.
+	when RUNA_BACKEND_DEFAULT {
+		if !text_init_runa(t, r) {
+			fmt.eprintln("skald: SKALD_RUNA requested but runa init failed; falling back to fontstash")
+		}
+	}
+
 	ok = true
 	return
 }
 
 @(private)
 text_destroy :: proc(t: ^Text, r: ^Renderer) {
+	if t.runa_state != nil {
+		text_destroy_runa(t, r)
+	}
 	text_destroy_gpu_image(t, r)
 	fs.Destroy(&t.fs)
 }
@@ -172,6 +196,9 @@ text_destroy_gpu_image :: proc(t: ^Text, r: ^Renderer) {
 // caller must call pipeline_rebuild_descriptor to rebind the new view.
 @(private)
 text_upload_dirty :: proc(t: ^Text, r: ^Renderer) -> (rebuilt: bool) {
+	if t.runa_state != nil {
+		return text_upload_dirty_runa(t, r)
+	}
 	if t.needs_rebuild {
 		t.atlas_w = u32(t.fs.width)
 		t.atlas_h = u32(t.fs.height)
@@ -209,6 +236,15 @@ text_upload_dirty :: proc(t: ^Text, r: ^Renderer) -> (rebuilt: bool) {
 // into the main frame command buffer.
 @(private)
 text_upload_region :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int) {
+	text_upload_region_from(t, r, x, y, w, h, t.fs.textureData, int(t.atlas_w))
+}
+
+// text_upload_region_from is the backend-agnostic uploader. `src` is the
+// CPU-side R8 atlas; `src_stride` is its row pitch in bytes. Used by
+// both fontstash (via text_upload_region) and runa (via
+// text_upload_dirty_runa) so the Vulkan plumbing has one definition.
+@(private)
+text_upload_region_from :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int, src: []u8, src_stride: int) {
 	bytes := vk.DeviceSize(w * h)
 	stg_buf, stg_mem := vk_make_buffer(r, bytes, {.TRANSFER_SRC}, {.HOST_VISIBLE, .HOST_COHERENT})
 	defer {
@@ -218,16 +254,15 @@ text_upload_region :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int) {
 
 	ptr: rawptr
 	vk.MapMemory(r.device, stg_mem, 0, bytes, {}, &ptr)
-	// Pack row-by-row from the fontstash atlas (whose stride is atlas_w)
+	// Pack row-by-row from the source atlas (whose stride is src_stride)
 	// into a tight `w`-wide staging buffer so CmdCopyBufferToImage doesn't
 	// need a bufferRowLength hint.
-	stride := int(t.atlas_w)
 	dst := cast([^]u8)ptr
 	for row in 0..<h {
-		src_off := (y + row) * stride + x
+		src_off := (y + row) * src_stride + x
 		dst_off := row * w
-		src := t.fs.textureData[src_off : src_off + w]
-		for col in 0..<w { dst[dst_off + col] = src[col] }
+		row_src := src[src_off : src_off + w]
+		for col in 0..<w { dst[dst_off + col] = row_src[col] }
 	}
 	vk.UnmapMemory(r.device, stg_mem)
 
@@ -309,6 +344,9 @@ font_bold_italic :: proc(r: ^Renderer) -> Font {
 // font_load registers a TTF/OTF font from memory. The bytes are borrowed —
 // callers must keep the slice alive for the lifetime of the renderer.
 font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
+	if r.text.runa_state != nil {
+		return font_load_runa(r, name, data)
+	}
 	return Font(fs.AddFontMem(&r.text.fs, name, data, false))
 }
 
@@ -328,6 +366,9 @@ font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
 // Skald ships only with Inter (Latin + Cyrillic); apps targeting
 // other scripts bundle the TTFs they need and register them here.
 font_add_fallback :: proc(r: ^Renderer, base, fallback: Font) -> bool {
+	if r.text.runa_state != nil {
+		return font_add_fallback_runa(r, base, fallback)
+	}
 	return fs.AddFallbackFont(&r.text.fs, int(base), int(fallback))
 }
 
@@ -348,6 +389,10 @@ draw_text :: proc(
 	size:  f32 = 14,
 	font:  Font = 0,
 ) {
+	if r.text.runa_state != nil {
+		draw_text_runa(r, text, x, y, color, size, font)
+		return
+	}
 	f := font == 0 ? r.text.default_font : font
 	scale := r.scale
 	if scale <= 0 { scale = 1 }
@@ -374,6 +419,9 @@ draw_text :: proc(
 // top-left anchored View_Text origin into the baseline y that `draw_text`
 // expects.
 text_ascent :: proc(r: ^Renderer, size: f32, font: Font = 0) -> f32 {
+	if r.text.runa_state != nil {
+		return text_ascent_runa(r, size, font)
+	}
 	f := font == 0 ? r.text.default_font : font
 	scale := r.scale
 	if scale <= 0 { scale = 1 }
@@ -394,6 +442,9 @@ measure_text :: proc(
 	size: f32 = 14,
 	font: Font = 0,
 ) -> (width, line_height: f32) {
+	if r.text.runa_state != nil {
+		return measure_text_runa(r, text, size, font)
+	}
 	f := font == 0 ? r.text.default_font : font
 	scale := r.scale
 	if scale <= 0 { scale = 1 }
@@ -591,17 +642,16 @@ wrap_text :: proc(
 	}
 	scale := r.scale
 	if scale <= 0 { scale = 1 }
-	// wrap_text measures candidate lines against `max_width` (logical). To
-	// avoid a per-measure divide we scale the threshold up once instead of
-	// dividing every TextBounds result down.
+	// wrap_text measures candidate lines against `max_width` (logical).
+	// We scale the threshold up once and compare physical widths inside
+	// the loop instead of dividing every measurement down.
+	//
+	// Measurement dispatches through `measure_text` so the active text
+	// backend (fontstash or runa) and `draw_text` agree on widths — when
+	// we measured here with fontstash directly and rendered with runa,
+	// the ~1% per-glyph metric differences accumulated into visible
+	// overflow at line ends in chat-style UIs.
 	max_width_px := max_width * scale
-
-	fs.BeginState(&r.text.fs)
-	defer fs.EndState(&r.text.fs)
-	fs.SetFont(&r.text.fs, int(f))
-	fs.SetSize(&r.text.fs, size * scale)
-	fs.SetAlignHorizontal(&r.text.fs, .LEFT)
-	fs.SetAlignVertical(&r.text.fs, .BASELINE)
 
 	lines: [dynamic]string
 	lines.allocator = context.temp_allocator
@@ -640,7 +690,8 @@ wrap_text :: proc(
 					word_end += 1
 				}
 				candidate := para[line_begin:word_end]
-				w := fs.TextBounds(&r.text.fs, candidate, 0, 0, nil)
+				cw, _ := measure_text(r, candidate, size, f)
+				w := cw * scale
 				if w <= max_width_px || line_begin == cursor {
 					// Either it fits, or it's the first word on the
 					// line (overflow is unavoidable for that single

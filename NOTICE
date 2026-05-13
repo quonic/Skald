@@ -9,6 +9,18 @@ the repository at:
 
     skald/assets/InterVariable-OFL.txt
 
+Skald vendors `runa` — a pure-Odin text engine (parsing, shaping,
+layout, rasterization, atlas) — at:
+
+    skald/third_party/runa/
+
+Runa is licensed under the zlib license; its own LICENSE file ships
+alongside the source at `skald/third_party/runa/LICENSE`. The
+vendored tree also includes two Unicode UCD data files
+(`Scripts.txt` for UAX #24, `LineBreak.txt` for UAX #14) at
+`skald/third_party/runa/tools/ucd/` — covered by the Unicode-DFS-2016
+licence. Both notices are preserved with the vendored copy.
+
 Skald also depends on a number of third-party libraries; none impose
 additional obligations on Skald consumers, but they are gratefully
 acknowledged below. See README.md for the full list.
