@@ -94,6 +94,17 @@ key_display_name :: proc(k: Key) -> string {
 	case .F4:  return "F4";  case .F5:  return "F5";  case .F6:  return "F6"
 	case .F7:  return "F7";  case .F8:  return "F8";  case .F9:  return "F9"
 	case .F10: return "F10"; case .F11: return "F11"; case .F12: return "F12"
+	case .Minus:         return "-"
+	case .Equals:        return "="
+	case .Left_Bracket:  return "["
+	case .Right_Bracket: return "]"
+	case .Semicolon:     return ";"
+	case .Apostrophe:    return "'"
+	case .Comma:         return ","
+	case .Period:        return "."
+	case .Slash:         return "/"
+	case .Backslash:     return "\\"
+	case .Grave:         return "`"
 	}
 	return fmt.tprintf("%v", k)
 }

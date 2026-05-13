@@ -172,9 +172,10 @@ Modifiers :: bit_set[Modifier]
 // register `Ctrl-S` / `Cmd-N` / `Ctrl-1` style shortcuts through
 // `skald.shortcut`.
 //
-// The bit_set storage stays a single 64-bit word — 14 editing keys + 26
-// letters + 10 digits = 50 variants, which fits in u64 with room to
-// spare for future additions (function keys, etc.).
+// 14 editing + 26 letters + 10 digits + 12 function + 11 punctuation =
+// 73 variants. Odin sizes the bit_set backing to the smallest integer
+// that fits — a `bit_set[Key]` here costs 16 bytes (u128). Stays a
+// single load on x86_64.
 Key :: enum u8 {
 	Backspace,
 	Delete,
@@ -202,6 +203,25 @@ Key :: enum u8 {
 	// F12 is the in-app debug inspector. Apps can bind any of these via
 	// `shortcut` for their own actions.
 	F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+
+	// Punctuation row keys, named after the US-QWERTY *unshifted* glyph.
+	// Useful for shortcuts like Ctrl+= / Ctrl+- (zoom), Ctrl+, (prefs),
+	// Ctrl+[ / Ctrl+] (indent), Ctrl+/ (toggle comment). Typed characters
+	// still arrive via `Input.text` — these are for discrete shortcut
+	// checks. Layouts: SDL3 reports the *physical* key here, so on a
+	// non-QWERTY layout `Comma` is still the key in the position where
+	// QWERTY would have `,`.
+	Minus,         // -
+	Equals,        // =
+	Left_Bracket,  // [
+	Right_Bracket, // ]
+	Semicolon,     // ;
+	Apostrophe,    // '
+	Comma,         // ,
+	Period,        // .
+	Slash,         // /
+	Backslash,     // \
+	Grave,         // `
 }
 
 // Keys is the set-valued companion to `Key`. `ctx.input.keys_pressed`

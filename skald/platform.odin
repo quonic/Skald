@@ -587,6 +587,17 @@ sdl_scancode_to_key :: proc(s: sdl3.Scancode) -> (Key, bool) {
 	case .F10: return .F10, true
 	case .F11: return .F11, true
 	case .F12: return .F12, true
+	case .MINUS:        return .Minus,         true
+	case .EQUALS:       return .Equals,        true
+	case .LEFTBRACKET:  return .Left_Bracket,  true
+	case .RIGHTBRACKET: return .Right_Bracket, true
+	case .SEMICOLON:    return .Semicolon,     true
+	case .APOSTROPHE:   return .Apostrophe,    true
+	case .COMMA:        return .Comma,         true
+	case .PERIOD:       return .Period,        true
+	case .SLASH:        return .Slash,         true
+	case .BACKSLASH:    return .Backslash,     true
+	case .GRAVE:        return .Grave,         true
 	}
 	return .Backspace, false
 }
