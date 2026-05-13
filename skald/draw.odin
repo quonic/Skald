@@ -207,6 +207,61 @@ batch_push_glyph :: proc(r: ^Renderer, x0, y0, x1, y1, s0, t0, s1, t1: f32, colo
 	)
 }
 
+// batch_push_glyph_paged is the multi-page variant of `batch_push_glyph`,
+// used by the runa text backend when a glyph lands on an atlas page
+// beyond page 0. Brackets the quad in its own Batch_Range so the
+// descriptor swap (binding 0 → this page's R8 atlas) is scoped, then
+// re-opens a default range so subsequent default-binding draws don't
+// inherit the page descriptor. Same pattern as `batch_push_image`,
+// but emits kind=1 (R8 atlas with tint = colour) instead of kind=2.
+@(private)
+batch_push_glyph_paged :: proc(r: ^Renderer, bind_group: vk.DescriptorSet, x0, y0, x1, y1, s0, t0, s1, t1: f32, color: Color) {
+	current_clip: Rect
+	if len(r.batch.clip_stack) > 0 {
+		current_clip = r.batch.clip_stack[len(r.batch.clip_stack) - 1]
+	} else {
+		current_clip = Rect{0, 0, f32(r.fb_size.x), f32(r.fb_size.y)}
+	}
+	scissor := rect_to_scissor(current_clip, r.fb_size_px, r.scale)
+
+	// Open the page-bound range. If the current range is empty (no
+	// draws since it opened), rewrite it in place so frame_end doesn't
+	// skip a zero-count range.
+	n := len(r.batch.ranges)
+	if n > 0 && r.batch.ranges[n - 1].index_start == u32(len(r.batch.indices)) {
+		r.batch.ranges[n - 1].clip       = scissor
+		r.batch.ranges[n - 1].bind_group = bind_group
+	} else {
+		append(&r.batch.ranges, Batch_Range{
+			clip        = scissor,
+			index_start = u32(len(r.batch.indices)),
+			bind_group  = bind_group,
+		})
+	}
+
+	col := color
+	col[3] *= r.alpha_multiplier
+	base := u32(len(r.batch.vertices))
+	v := Vertex{color = col, kind = 1}
+
+	v.pos = {x0, y0}; v.uv = {s0, t0}; append(&r.batch.vertices, v)
+	v.pos = {x1, y0}; v.uv = {s1, t0}; append(&r.batch.vertices, v)
+	v.pos = {x1, y1}; v.uv = {s1, t1}; append(&r.batch.vertices, v)
+	v.pos = {x0, y1}; v.uv = {s0, t1}; append(&r.batch.vertices, v)
+
+	append(&r.batch.indices,
+		base + 0, base + 1, base + 2,
+		base + 0, base + 2, base + 3,
+	)
+
+	// Re-open a default-bind-group range so subsequent shape/text
+	// draws don't inherit the page-specific descriptor.
+	append(&r.batch.ranges, Batch_Range{
+		clip        = scissor,
+		index_start = u32(len(r.batch.indices)),
+	})
+}
+
 // batch_push_image appends a textured RGBA quad that samples from the
 // caller-supplied descriptor set. Brackets the quad in its own
 // Batch_Range so the descriptor swap (binding 1 → this image's texture

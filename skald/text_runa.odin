@@ -2,6 +2,7 @@ package skald
 
 import "core:fmt"
 import "core:math"
+import vk "vendor:vulkan"
 import runa "third_party/runa"
 
 // Text_Runa carries the runa-backed text state. Allocated once per
@@ -35,11 +36,13 @@ Text_Runa :: struct {
 	// draw_text would fill the atlas with duplicates and overflow.
 	glyph_cache: map[Glyph_Key]runa.Atlas_Slot,
 
-	// Lazy flag: true once `COLOR_ATLAS_KEY` has been registered in
-	// the image cache. Registration is deferred until the first
-	// colour-glyph dirty rect because `text_init` runs before
-	// `image_cache_init`, so we can't seed the entry at init time.
-	color_atlas_registered: bool,
+	// Per-page registration flags for the colour atlas. Each colour
+	// page maps to a synthetic image-cache entry
+	// (`skald://runa-color-atlas/N`); the bool here marks whether the
+	// N-th page has been seeded with `image_load_pixels` yet.
+	// Registration is deferred to first dirty upload because
+	// `text_init` runs before `image_cache_init`.
+	color_atlas_registered: [dynamic]bool,
 
 	// Reusable Font_Stack buffer. Built once per `font_add_fallback`
 	// and re-pointed each call so `measure_text_runa` / `draw_text_runa`
@@ -47,6 +50,29 @@ Text_Runa :: struct {
 	// this path dozens of times per frame; the savings show up as ~3 %
 	// in p50 frame time.
 	stack_buf: [dynamic]^runa.Font,
+
+	// Per-page GPU resources for runa.atlas.pages_alpha[1..]. Page 0 is
+	// mapped onto Skald's existing `Text.atlas_image` (the same R8_UNORM
+	// image fontstash uses), so the default text descriptor still works
+	// and apps that fit inside one page pay nothing extra. Pages 1, 2…
+	// are lazily allocated here when runa's shelf packer spills beyond
+	// the first page — each gets its own R8_UNORM image + descriptor
+	// set bound to it, picked up by `batch_push_glyph` via a Batch_Range
+	// swap (same pattern as `batch_push_image`).
+	alpha_pages: [dynamic]Runa_Alpha_Page,
+}
+
+// Runa_Alpha_Page holds the GPU side of one runa alpha-atlas page
+// beyond page 0. Allocated on demand by `text_runa_ensure_alpha_page`
+// the first time a glyph with `slot.page_index = i` (for i ≥ 1)
+// appears in `text_runa_emit_glyph`.
+@(private)
+Runa_Alpha_Page :: struct {
+	image:  vk.Image,
+	memory: vk.DeviceMemory,
+	view:   vk.ImageView,
+	dset:   vk.DescriptorSet,
+	w, h:   u32,
 }
 
 // Glyph_Key keys the raster-slot cache. `size_q` is `size * 4` rounded
@@ -60,12 +86,18 @@ Glyph_Key :: struct {
 	subpx:  u8,
 }
 
-// Synthetic image-cache key for runa's RGBA glyph atlas. COLR-base
-// glyphs are composited into runa's pages_color[0] (RGBA), then the
-// dirty region is mirrored into this Skald-side image-cache entry so
-// `batch_push_image` can sample it like any other RGBA texture.
+// Synthetic image-cache key prefix for runa's RGBA glyph atlas
+// pages. Each colour page becomes one image-cache entry named
+// `skald://runa-color-atlas/N`, so multi-page colour atlases (rare
+// in practice but possible) Just Work via the existing image-cache
+// + batch_push_image machinery.
 @(private)
-COLOR_ATLAS_KEY :: "skald://runa-color-atlas"
+COLOR_ATLAS_KEY_PREFIX :: "skald://runa-color-atlas/"
+
+@(private)
+text_runa_color_key :: proc(idx: int) -> string {
+	return fmt.tprintf("%s%d", COLOR_ATLAS_KEY_PREFIX, idx)
+}
 
 // RUNA_BACKEND_DEFAULT is true when the build was passed
 // `-define:SKALD_RUNA=true`. text_init reads this to decide whether
@@ -113,6 +145,9 @@ text_init_runa :: proc(t: ^Text, r: ^Renderer) -> bool {
 @(private)
 text_destroy_runa :: proc(t: ^Text, r: ^Renderer) {
 	if t.runa_state == nil { return }
+	for &page in t.runa_state.alpha_pages {
+		text_runa_destroy_alpha_page(&page, r)
+	}
 	text_runa_free(t.runa_state)
 	t.runa_state = nil
 }
@@ -122,6 +157,8 @@ text_runa_free :: proc(rs: ^Text_Runa) {
 	delete(rs.glyph_cache)
 	delete(rs.fallback_chain)
 	delete(rs.stack_buf)
+	delete(rs.alpha_pages)
+	delete(rs.color_atlas_registered)
 	for f in rs.fonts {
 		runa.font_destroy(f)
 		free(f)
@@ -162,56 +199,80 @@ text_runa_stack :: proc(rs: ^Text_Runa, primary: Font) -> runa.Font_Stack {
 	return runa.Font_Stack(rs.stack_buf[:n])
 }
 
-// text_upload_dirty_runa drains both the alpha page (→ Skald's R8 atlas
-// image) and the colour page (→ the registered `skald://runa-color-atlas`
-// image cache entry). Page 0 of each shares dimensions with its GPU
-// counterpart so coordinates are 1:1. Returns false for `rebuilt` —
-// Phase 1 never resizes the GPU images.
+// text_upload_dirty_runa drains every dirty alpha + colour page in
+// runa's atlas into its corresponding Skald-side GPU resource.
+//
+// Alpha page 0 → the shared `Text.atlas_image` (the same R8_UNORM
+// image fontstash uses, so the default text descriptor still works).
+// Alpha pages 1+ → per-page images on `Text_Runa.alpha_pages`,
+// lazily allocated. Drawing routes glyphs to the right descriptor
+// via `slot.page_index`.
+//
+// Colour page 0 → the `skald://runa-color-atlas` image-cache entry.
+// Colour pages 1+ → per-index entries (same key pattern). Drawing
+// routes via `batch_push_image` with the matching entry's descriptor.
+//
+// Returns false for `rebuilt` — pages never resize, only grow in
+// count.
 @(private)
 text_upload_dirty_runa :: proc(t: ^Text, r: ^Renderer) -> (rebuilt: bool) {
 	rs := t.runa_state
 	if rs == nil { return }
 
-	// Alpha (mono) glyphs → the existing R8 atlas image.
-	if len(rs.atlas.pages_alpha) > 0 {
-		page := &rs.atlas.pages_alpha[0]
-		if page.is_dirty {
-			x0 := int(page.dirty_min.x)
-			y0 := int(page.dirty_min.y)
-			x1 := int(page.dirty_max.x)
-			y1 := int(page.dirty_max.y)
-			w := x1 - x0
-			h := y1 - y0
-			if w > 0 && h > 0 {
+	// Alpha (mono) glyphs.
+	for i in 0..<len(rs.atlas.pages_alpha) {
+		page := &rs.atlas.pages_alpha[i]
+		if !page.is_dirty { continue }
+
+		x0 := int(page.dirty_min.x)
+		y0 := int(page.dirty_min.y)
+		x1 := int(page.dirty_max.x)
+		y1 := int(page.dirty_max.y)
+		w := x1 - x0
+		h := y1 - y0
+		if w > 0 && h > 0 {
+			if i == 0 {
+				// Page 0 is mapped to the shared atlas image.
 				text_upload_region_from(t, r, x0, y0, w, h, page.pixels, int(page.width))
+			} else {
+				gp := text_runa_ensure_alpha_page(rs, r, i)
+				if gp != nil {
+					text_upload_region_to(r, gp, x0, y0, w, h, page.pixels, int(page.width))
+				}
 			}
-			page.is_dirty  = false
-			page.dirty_min = {}
-			page.dirty_max = {}
 		}
+		page.is_dirty  = false
+		page.dirty_min = {}
+		page.dirty_max = {}
 	}
 
-	// Colour glyphs → the image-cache RGBA entry. Registration is lazy
-	// (image_cache_init runs after text_init, so we can't seed at init
-	// time); the first dirty colour rect triggers `image_load_pixels`,
-	// subsequent ones use `image_update_pixels`. The whole page uploads
-	// each time — no sub-region API yet — which is cheap enough at
-	// 4 MB-per-update because frames introducing new emoji are rare.
-	if len(rs.atlas.pages_color) > 0 {
-		page := &rs.atlas.pages_color[0]
-		if page.is_dirty {
-			w, h := u32(page.width), u32(page.height)
-			if !rs.color_atlas_registered {
-				if image_load_pixels(r, COLOR_ATLAS_KEY, w, h, page.pixels) {
-					rs.color_atlas_registered = true
+	// Colour glyphs → per-page image-cache entries. Registration is
+	// lazy (image_cache_init runs after text_init, so we can't seed
+	// at init time); the first dirty rect for each page triggers
+	// `image_load_pixels`, subsequent ones use `image_update_pixels`.
+	// The whole page uploads each time — no sub-region API yet —
+	// which is cheap enough at 4 MB-per-update because frames
+	// introducing new emoji are rare.
+	for i in 0..<len(rs.atlas.pages_color) {
+		page := &rs.atlas.pages_color[i]
+		if !page.is_dirty { continue }
+
+		w, h := u32(page.width), u32(page.height)
+		registered := i < len(rs.color_atlas_registered) && rs.color_atlas_registered[i]
+		key := text_runa_color_key(i)
+		if !registered {
+			if image_load_pixels(r, key, w, h, page.pixels) {
+				for len(rs.color_atlas_registered) <= i {
+					append(&rs.color_atlas_registered, false)
 				}
-			} else {
-				image_update_pixels(r, COLOR_ATLAS_KEY, w, h, page.pixels)
+				rs.color_atlas_registered[i] = true
 			}
-			page.is_dirty  = false
-			page.dirty_min = {}
-			page.dirty_max = {}
+		} else {
+			image_update_pixels(r, key, w, h, page.pixels)
 		}
+		page.is_dirty  = false
+		page.dirty_min = {}
+		page.dirty_max = {}
 	}
 	return
 }
@@ -341,42 +402,167 @@ text_runa_emit_glyph :: proc(
 		x1 := (bx + f32(slot.px_size.x)) * inv
 		y1 := (by + f32(slot.px_size.y)) * inv
 		if slot.is_color {
-			entry := text_runa_ensure_color_atlas(rs, r)
+			entry := text_runa_ensure_color_atlas(rs, r, int(slot.page_index))
 			if entry != nil {
 				batch_push_image(r, entry.dset,
 					Rect{x0, y0, x1 - x0, y1 - y0},
 					[4]f32{slot.uv_rect[0], slot.uv_rect[1], slot.uv_rect[2], slot.uv_rect[3]},
 					Color{1, 1, 1, 1})
 			}
-		} else {
+		} else if slot.page_index == 0 {
+			// Page 0 lands in the shared atlas image; the default text
+			// descriptor already binds it, so the normal kind=1 push works.
 			batch_push_glyph(r,
 				x0, y0, x1, y1,
 				slot.uv_rect[0], slot.uv_rect[1],
 				slot.uv_rect[2], slot.uv_rect[3],
 				color)
+		} else {
+			// Pages 1+ live on per-page images with their own descriptor
+			// set; swap the binding for this quad via the paged variant.
+			page := text_runa_ensure_alpha_page(rs, r, int(slot.page_index))
+			if page != nil {
+				batch_push_glyph_paged(r, page.dset,
+					x0, y0, x1, y1,
+					slot.uv_rect[0], slot.uv_rect[1],
+					slot.uv_rect[2], slot.uv_rect[3],
+					color)
+			}
 		}
 	}
 	pen_x^ += x_advance
 	pen_y^ += y_advance
 }
 
-// text_runa_ensure_color_atlas lazily registers the colour atlas with
-// the image cache and returns its entry. Called from `draw_text_runa`
-// the first time a colour glyph is pushed — this has to happen during
-// view (not at frame_end) so the entry's descriptor set is available
-// for the same frame's render pass. Returns nil on registration
-// failure (no colour glyphs render that frame).
+// text_runa_ensure_alpha_page lazily allocates the GPU image +
+// descriptor set for runa's `pages_alpha[idx]` (for idx ≥ 1; page 0
+// is mapped onto the shared `Text.atlas_image` and never reaches
+// here). Called from both the upload-dirty path (to seed the GPU
+// resources when a new page is first written to) and from
+// `text_runa_emit_glyph` (to look up the descriptor set when a glyph
+// references a non-zero page index). Returns nil on failure.
 @(private)
-text_runa_ensure_color_atlas :: proc(rs: ^Text_Runa, r: ^Renderer) -> ^Image_Entry {
-	if rs.color_atlas_registered {
-		return image_cache_get(r, COLOR_ATLAS_KEY)
+text_runa_ensure_alpha_page :: proc(rs: ^Text_Runa, r: ^Renderer, idx: int) -> ^Runa_Alpha_Page {
+	if idx <= 0 { return nil }
+	// Skald-side pages are 1-indexed onto pages_alpha[1..]; we store
+	// them densely in `alpha_pages[idx-1]` so a slot.page_index of 1
+	// maps to alpha_pages[0]. Grow the dynamic array as needed.
+	for len(rs.alpha_pages) < idx {
+		append(&rs.alpha_pages, Runa_Alpha_Page{})
 	}
-	if len(rs.atlas.pages_color) == 0 { return nil }
-	page := &rs.atlas.pages_color[0]
-	if !image_load_pixels(r, COLOR_ATLAS_KEY, u32(page.width), u32(page.height), page.pixels) {
+	page := &rs.alpha_pages[idx - 1]
+	if page.image != 0 { return page }
+
+	if idx >= len(rs.atlas.pages_alpha) { return nil }
+	src := &rs.atlas.pages_alpha[idx]
+	if !text_runa_create_alpha_page(page, r, u32(src.width), u32(src.height)) {
 		return nil
 	}
-	rs.color_atlas_registered = true
+	return page
+}
+
+@(private)
+text_runa_create_alpha_page :: proc(page: ^Runa_Alpha_Page, r: ^Renderer, w, h: u32) -> bool {
+	ii := vk.ImageCreateInfo{
+		sType = .IMAGE_CREATE_INFO, imageType = .D2, format = .R8_UNORM,
+		extent = {w, h, 1}, mipLevels = 1, arrayLayers = 1,
+		samples = {._1}, tiling = .OPTIMAL,
+		usage = {.TRANSFER_DST, .SAMPLED}, sharingMode = .EXCLUSIVE,
+		initialLayout = .UNDEFINED,
+	}
+	if res := vk.CreateImage(r.device, &ii, nil, &page.image); res != .SUCCESS {
+		fmt.eprintfln("skald: CreateImage (runa alpha page): %v", res); return false
+	}
+	req: vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(r.device, page.image, &req)
+	ai := vk.MemoryAllocateInfo{
+		sType = .MEMORY_ALLOCATE_INFO,
+		allocationSize = req.size,
+		memoryTypeIndex = vk_find_mem_type(r, req.memoryTypeBits, {.DEVICE_LOCAL}),
+	}
+	if res := vk.AllocateMemory(r.device, &ai, nil, &page.memory); res != .SUCCESS {
+		fmt.eprintfln("skald: AllocateMemory (runa alpha page): %v", res); return false
+	}
+	vk.BindImageMemory(r.device, page.image, page.memory, 0)
+
+	viw := vk.ImageViewCreateInfo{
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		image = page.image, viewType = .D2, format = .R8_UNORM,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+	if res := vk.CreateImageView(r.device, &viw, nil, &page.view); res != .SUCCESS {
+		fmt.eprintfln("skald: CreateImageView (runa alpha page): %v", res); return false
+	}
+
+	// Descriptor set lives in the pipeline's pool, same layout as the
+	// per-target text descriptor. One per page, shared across windows
+	// — the pipeline binds it at the same slot as the default atlas
+	// when this page's glyphs are drawn (via a Batch_Range swap).
+	da := vk.DescriptorSetAllocateInfo{
+		sType = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool = r.pipeline.dset_pool,
+		descriptorSetCount = 1,
+		pSetLayouts = &r.pipeline.dset_layout,
+	}
+	if res := vk.AllocateDescriptorSets(r.device, &da, &page.dset); res != .SUCCESS {
+		fmt.eprintfln("skald: AllocateDescriptorSets (runa alpha page): %v", res); return false
+	}
+	di := vk.DescriptorImageInfo{
+		sampler = r.pipeline.sampler, imageView = page.view,
+		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+	}
+	w_desc := vk.WriteDescriptorSet{
+		sType = .WRITE_DESCRIPTOR_SET, dstSet = page.dset,
+		dstBinding = 0, descriptorCount = 1, descriptorType = .COMBINED_IMAGE_SAMPLER,
+		pImageInfo = &di,
+	}
+	vk.UpdateDescriptorSets(r.device, 1, &w_desc, 0, nil)
+
+	page.w = w
+	page.h = h
+	return true
+}
+
+// text_upload_region_to uploads a dirty `w × h` region of the runa
+// CPU-side alpha page into the matching Skald GPU image. Mirror of
+// `text_upload_region_from`'s underlying `vk_upload_r8_region` but
+// targeted at one of the per-page images.
+@(private)
+text_upload_region_to :: proc(r: ^Renderer, page: ^Runa_Alpha_Page, x, y, w, h: int, src: []u8, src_stride: int) {
+	if page.image == 0 { return }
+	vk_upload_r8_region(r, page.image, x, y, w, h, src, src_stride)
+}
+
+@(private)
+text_runa_destroy_alpha_page :: proc(page: ^Runa_Alpha_Page, r: ^Renderer) {
+	if page.dset   != 0 { vk.FreeDescriptorSets(r.device, r.pipeline.dset_pool, 1, &page.dset); page.dset = 0 }
+	if page.view   != 0 { vk.DestroyImageView(r.device, page.view, nil); page.view = 0 }
+	if page.image  != 0 { vk.DestroyImage(r.device, page.image, nil); page.image = 0 }
+	if page.memory != 0 { vk.FreeMemory(r.device, page.memory, nil); page.memory = 0 }
+}
+
+// text_runa_ensure_color_atlas lazily registers colour atlas page
+// `idx` with the image cache and returns its entry. Called from
+// `text_runa_emit_glyph` for each colour glyph — this has to happen
+// during view (not at frame_end) so the entry's descriptor set is
+// available for the same frame's render pass. Returns nil on
+// registration failure (that page's colour glyphs render as nothing).
+@(private)
+text_runa_ensure_color_atlas :: proc(rs: ^Text_Runa, r: ^Renderer, idx: int) -> ^Image_Entry {
+	key := text_runa_color_key(idx)
+	if idx < len(rs.color_atlas_registered) && rs.color_atlas_registered[idx] {
+		return image_cache_get(r, key)
+	}
+	if idx >= len(rs.atlas.pages_color) { return nil }
+	page := &rs.atlas.pages_color[idx]
+	if !image_load_pixels(r, key, u32(page.width), u32(page.height), page.pixels) {
+		return nil
+	}
+	// Grow the registration-flag array as needed and mark this page seeded.
+	for len(rs.color_atlas_registered) <= idx {
+		append(&rs.color_atlas_registered, false)
+	}
+	rs.color_atlas_registered[idx] = true
 	// Initial upload covered the current state; clear the dirty flag
 	// so `text_upload_dirty_runa` doesn't re-upload the same bytes at
 	// frame_end. Subsequent dirty rects (later frames) flow through
@@ -384,7 +570,7 @@ text_runa_ensure_color_atlas :: proc(rs: ^Text_Runa, r: ^Renderer) -> ^Image_Ent
 	page.is_dirty  = false
 	page.dirty_min = {}
 	page.dirty_max = {}
-	return image_cache_get(r, COLOR_ATLAS_KEY)
+	return image_cache_get(r, key)
 }
 
 // text_runa_get_slot is the raster-cache lookup. On miss it rasterises

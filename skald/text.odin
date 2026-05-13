@@ -239,12 +239,22 @@ text_upload_region :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int) {
 	text_upload_region_from(t, r, x, y, w, h, t.fs.textureData, int(t.atlas_w))
 }
 
-// text_upload_region_from is the backend-agnostic uploader. `src` is the
+// text_upload_region_from is the backend-agnostic uploader for the
+// *shared* R8 atlas image (`Text.atlas_image`). `src` is the
 // CPU-side R8 atlas; `src_stride` is its row pitch in bytes. Used by
-// both fontstash (via text_upload_region) and runa (via
-// text_upload_dirty_runa) so the Vulkan plumbing has one definition.
+// both fontstash (via text_upload_region) and runa page 0 (via
+// text_upload_dirty_runa). Pages 1+ go via `text_upload_region_to`.
 @(private)
 text_upload_region_from :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int, src: []u8, src_stride: int) {
+	vk_upload_r8_region(r, t.atlas_image, x, y, w, h, src, src_stride)
+}
+
+// vk_upload_r8_region copies a `w × h` R8 byte region from `src`
+// (at the given source stride) into `image` at offset `(x, y)`.
+// One-shot submit — atlas updates are rare enough that we don't need
+// to pipeline them into the main frame command buffer.
+@(private)
+vk_upload_r8_region :: proc(r: ^Renderer, image: vk.Image, x, y, w, h: int, src: []u8, src_stride: int) {
 	bytes := vk.DeviceSize(w * h)
 	stg_buf, stg_mem := vk_make_buffer(r, bytes, {.TRANSFER_SRC}, {.HOST_VISIBLE, .HOST_COHERENT})
 	defer {
@@ -272,7 +282,7 @@ text_upload_region_from :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int, src: []
 	// UNDEFINED as the old layout is safe whether this is the first
 	// upload (image just created) or a subsequent one — Vulkan treats
 	// UNDEFINED as "contents may be discarded", which is what we want.
-	vk_image_barrier(cb, t.atlas_image, range,
+	vk_image_barrier(cb, image, range,
 		{}, {.TRANSFER_WRITE},
 		.UNDEFINED, .TRANSFER_DST_OPTIMAL,
 		{.TOP_OF_PIPE}, {.TRANSFER})
@@ -284,9 +294,9 @@ text_upload_region_from :: proc(t: ^Text, r: ^Renderer, x, y, w, h: int, src: []
 		imageOffset = {i32(x), i32(y), 0},
 		imageExtent = {u32(w), u32(h), 1},
 	}
-	vk.CmdCopyBufferToImage(cb, stg_buf, t.atlas_image, .TRANSFER_DST_OPTIMAL, 1, &region)
+	vk.CmdCopyBufferToImage(cb, stg_buf, image, .TRANSFER_DST_OPTIMAL, 1, &region)
 
-	vk_image_barrier(cb, t.atlas_image, range,
+	vk_image_barrier(cb, image, range,
 		{.TRANSFER_WRITE}, {.SHADER_READ},
 		.TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL,
 		{.TRANSFER}, {.FRAGMENT_SHADER})
