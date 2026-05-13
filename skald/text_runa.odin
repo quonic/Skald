@@ -2,7 +2,7 @@ package skald
 
 import "core:fmt"
 import "core:math"
-import "runa:runa"
+import runa "third_party/runa"
 
 // Text_Runa carries the runa-backed text state. Allocated once per
 // Renderer when the `SKALD_RUNA` build define is true *and*

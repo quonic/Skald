@@ -15,14 +15,10 @@
 # The -collection:gui flag points at the project root so `import "gui:skald"`
 # resolves the same way from any example.
 #
-# Runa is the pure-Odin text engine that replaces fontstash. The
-# vendored copy ships inside Skald at skald/third_party/runa/, so
-# clones of Skald build standalone — no sibling checkout needed.
-# Override RUNA_PATH=/path/to/checkout to develop against an external
-# runa tree (the runa-integration soak path).
-# Pass SKALD_RUNA=1 to actually route text through runa; without it
-# the collection is still resolved (the import statement is
-# unconditional) but fontstash drives the renderer.
+# Runa is the pure-Odin text engine that ships vendored at
+# skald/third_party/runa/ — Skald imports it via a relative path so
+# clones build standalone without any extra collection flag.
+# Pass SKALD_RUNA=1 to route text through runa instead of fontstash.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -37,7 +33,6 @@ if [[ "${RELEASE:-0}" == "1" ]]; then
     DEBUG_FLAG="-o:speed"
 fi
 
-RUNA_PATH="${RUNA_PATH:-./skald/third_party}"
 RUNA_DEFINE=""
 if [[ "${SKALD_RUNA:-0}" == "1" ]]; then
     RUNA_DEFINE="-define:SKALD_RUNA=true"
@@ -45,7 +40,6 @@ fi
 
 odin build "examples/${EXAMPLE}" \
     -collection:gui=. \
-    -collection:runa="${RUNA_PATH}" \
     ${DEBUG_FLAG} \
     ${RUNA_DEFINE} \
     -out:"build/${EXAMPLE}"

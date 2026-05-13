@@ -25,16 +25,13 @@ if "%ACTION%"=="" set ACTION=build
 
 if not exist build mkdir build
 
-REM Runa ships vendored at skald\third_party\runa. Override RUNA_PATH
-REM to point at an external checkout when developing runa itself.
-REM Set SKALD_RUNA=1 to route text through runa; the collection
-REM is added either way so the import resolves.
-if "%RUNA_PATH%"=="" set RUNA_PATH=.\skald\third_party
-
+REM Runa ships vendored at skald\third_party\runa and is imported via
+REM a relative path, so no extra collection flag is needed.
+REM Set SKALD_RUNA=1 to route text through runa instead of fontstash.
 set RUNA_DEFINE=
 if "%SKALD_RUNA%"=="1" set RUNA_DEFINE=-define:SKALD_RUNA=true
 
-odin build "examples\%EXAMPLE%" -collection:gui=. -collection:runa=%RUNA_PATH% %RUNA_DEFINE% -out:"build\%EXAMPLE%.exe"
+odin build "examples\%EXAMPLE%" -collection:gui=. %RUNA_DEFINE% -out:"build\%EXAMPLE%.exe"
 if errorlevel 1 exit /b 1
 
 REM Locate Odin's install tree to find SDL3.dll. `where odin` returns the
