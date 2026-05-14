@@ -9,6 +9,21 @@ the repository at:
 
     skald/assets/InterVariable-OFL.txt
 
+Skald also bundles Twemoji-Mozilla — a COLRv0 colour-emoji TTF
+built from Twitter's Twemoji artwork (CC-BY-4.0) using Mozilla's
+twemoji-colr tooling (Apache-2.0). It powers
+`skald.font_use_default_emoji(r)`, the one-line helper apps call
+to opt into colour emoji rendering under the runa text backend.
+Attribution + full notice at:
+
+    skald/assets/Twemoji-Mozilla-CCBY.txt
+
+Apps that ship a Skald binary are redistributing the Twemoji
+artwork (the bytes are embedded via Odin's compile-time `#load`
+regardless of whether the app calls the helper). The CC-BY-4.0
+licence requires an attribution line in your app's About / docs:
+"Twemoji by Twitter, Inc. and contributors — CC-BY 4.0".
+
 Skald vendors `runa` — a pure-Odin text engine (parsing, shaping,
 layout, rasterization, atlas) — at:
 

@@ -1,27 +1,21 @@
 package example_color_emoji
 
-import "core:fmt"
-import "core:os"
 import "gui:skald"
 
-// Colour-emoji smoke test for the runa text backend (Phase 1b).
+// Colour-emoji smoke test — calls `skald.font_use_default_emoji(r)`
+// to register Skald's bundled Twemoji-Mozilla (COLRv0) as a fallback
+// to Inter. Under the runa text backend (`SKALD_RUNA=1`) the emoji
+// render in full colour; under the default fontstash backend they
+// render as `.notdef` tofu (fontstash doesn't decode COLR tables).
 //
-// Loads Twemoji-Mozilla (COLRv0 layered colour font) from the
-// sibling runa repo at first-frame time and registers it as a
-// fallback to the bundled Inter face. Runa's per-codepoint fallback
-// picker then routes emoji codepoints (🦊, 🚀, 🎉, etc.) to Twemoji
-// while Latin / Cyrillic / Greek text stays in Inter.
+// Run with: `SKALD_RUNA=1 ./build.sh 45_color_emoji run`
 //
-// Run with `SKALD_RUNA=1 ./build.sh 45_color_emoji run`. Under
-// fontstash (the default) emoji render as `.notdef` boxes — there's
-// no equivalent fallback path. Under runa the emoji render as full
-// COLRv0 colour glyphs sampled from the RGBA atlas via the existing
-// `image_cache` → `batch_push_image` plumbing.
+// Apps that adopt this pattern need to add an attribution line for
+// the Twemoji artwork — CC-BY-4.0. See
+// `skald/assets/Twemoji-Mozilla-CCBY.txt` for the full notice.
 
 State :: struct {}
 Msg   :: struct {}
-
-EMOJI_PATH :: "../runa/tests/fonts/Twemoji-Mozilla.ttf"
 
 @(private)
 fonts_ready: bool
@@ -32,24 +26,17 @@ update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) { return s, {} }
 view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 	th := ctx.theme
 
-	// Lazy one-shot fallback registration. Mirrors examples/39_icons.
+	// One-line opt-in for colour emoji on the first frame. Idempotent —
+	// re-calling returns the cached handle.
 	if !fonts_ready && ctx.renderer != nil {
-		data, err := os.read_entire_file_from_path(EMOJI_PATH, context.allocator)
-		if err != nil {
-			fmt.eprintln("45_color_emoji: failed to read", EMOJI_PATH, "—", err)
-		} else {
-			fnt := skald.font_load(ctx.renderer, "twemoji", data)
-			if int(fnt) >= 0 {
-				skald.font_add_fallback(ctx.renderer, skald.font_default(ctx.renderer), fnt)
-			}
-		}
+		skald.font_use_default_emoji(ctx.renderer)
 		fonts_ready = true
 	}
 
 	return skald.col(
 		skald.text("Skald — Colour Emoji (runa)", th.color.fg, th.font.size_xl),
 		skald.spacer(th.spacing.md),
-		skald.text("Latin text mixes with Twemoji glyphs via the runa fallback chain.",
+		skald.text("Twemoji glyphs render in full colour wherever Inter doesn't cover the codepoint.",
 			th.color.fg_muted, th.font.size_md, max_width = 560),
 		skald.spacer(th.spacing.lg),
 		skald.text("Hello, world! 🦊", th.color.fg, th.font.size_display),

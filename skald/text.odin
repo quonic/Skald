@@ -25,6 +25,16 @@ INTER_ITALIC :: #load("assets/Inter-Italic.ttf", []byte)
 @(private)
 INTER_BOLD_ITALIC :: #load("assets/Inter-BoldItalic.ttf", []byte)
 
+// TWEMOJI_MOZILLA is the bundled colour-emoji font — Twitter / Twemoji
+// artwork built into a COLRv0 layered TTF by Mozilla, CC-BY-4.0
+// (artwork) + Apache-2.0 (tooling). See assets/Twemoji-Mozilla-CCBY.txt
+// for the full attribution. Loaded on demand by `font_use_default_emoji`;
+// the bytes are embedded in every Skald binary either way thanks to
+// `#load`-at-compile-time semantics, but apps that don't call the
+// helper never register the font and pay zero runtime cost.
+@(private)
+TWEMOJI_MOZILLA :: #load("assets/Twemoji-Mozilla.ttf", []byte)
+
 // ATLAS_SIZE is the initial glyph atlas edge length in pixels. Chosen large
 // enough that typical desktop UIs (a handful of sizes across Latin) never
 // trigger an in-frame expansion — which would invalidate the UVs of glyphs
@@ -76,6 +86,13 @@ Text :: struct {
 	// Optional runa-backed state. nil → fontstash backend; non-nil →
 	// public APIs route to the runa equivalents in text_runa.odin.
 	runa_state: ^Text_Runa,
+
+	// Cached handle for `font_use_default_emoji`. Zero (i.e. invalid)
+	// until the first call; subsequent calls return the same Font so
+	// apps can sprinkle the helper liberally without re-loading the
+	// 1.4 MB Twemoji bytes or appending duplicate font entries.
+	default_emoji_font:        Font,
+	default_emoji_font_loaded: bool,
 }
 
 @(private)
@@ -380,6 +397,45 @@ font_add_fallback :: proc(r: ^Renderer, base, fallback: Font) -> bool {
 		return font_add_fallback_runa(r, base, fallback)
 	}
 	return fs.AddFallbackFont(&r.text.fs, int(base), int(fallback))
+}
+
+// font_use_default_emoji registers Skald's bundled Twemoji-Mozilla
+// (COLRv0 colour-emoji TTF) as a fallback to the default Inter font
+// and returns its handle. Idempotent — calling more than once
+// returns the existing handle without re-registering.
+//
+// Why this is opt-in rather than automatic: every text widget paying
+// the fallback-lookup cost for codepoints it never renders has a
+// real cost (one extra cmap lookup per missing-from-Inter character
+// per shape). Apps that don't show emoji avoid it by not calling.
+//
+// Backend support: the runa backend (`SKALD_RUNA=1`) renders the
+// glyphs as full COLRv0 colour via the RGBA atlas — what you'd
+// expect from "colour emoji". The default fontstash backend doesn't
+// decode COLR / CBDT / sbix at all, so emoji fall through to
+// fontstash's missing-glyph tofu the same as before; this helper is
+// effectively a no-op there. Becomes useful by default in 1.1 when
+// runa is the default backend.
+//
+//     fnt := skald.font_use_default_emoji(ctx.renderer)
+//     // Now any text() / button() / text_input() etc. picks up
+//     // emoji glyphs (under runa) — no other code changes.
+//
+// Bundled artwork is Twemoji, CC-BY-4.0. Apps shipping a Skald
+// binary are redistributing the artwork; an attribution line in
+// the app's About / docs satisfies the licence requirement. See
+// `skald/assets/Twemoji-Mozilla-CCBY.txt` for the full notice.
+font_use_default_emoji :: proc(r: ^Renderer) -> Font {
+	if r.text.default_emoji_font_loaded {
+		return r.text.default_emoji_font
+	}
+	fnt := font_load(r, "twemoji", TWEMOJI_MOZILLA)
+	r.text.default_emoji_font_loaded = true
+	r.text.default_emoji_font        = fnt
+	if int(fnt) >= 0 {
+		font_add_fallback(r, font_default(r), fnt)
+	}
+	return fnt
 }
 
 // draw_text queues a string for rendering this frame. `x, y` is the baseline
