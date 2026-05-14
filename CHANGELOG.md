@@ -4,6 +4,21 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
+## Unreleased
+
+### Added
+
+- **`emoji_picker` widget.** 😀 trigger that opens a popover with a
+  substring-match search bar, optional recents row, 9 Unicode CLDR
+  category tabs, a paginated 8 × 6 grid of ~1150 single-codepoint
+  emojis, and a Fitzpatrick skin-tone toolbar. Picked emojis fire
+  `on_pick(emoji_string)`; people / hand emojis with a non-default
+  tone selected get the modifier codepoint appended. Recents are
+  app-owned (pass a `[]string`). Renders properly under runa
+  (`SKALD_RUNA=1`); under fontstash the cells hit-test fine but glyphs
+  tofu because fontstash doesn't decode COLR. See
+  `examples/46_emoji_picker` + the cookbook recipe.
+
 ## 1.0.0-rc5 — 2026-05-14
 
 The headline of rc5 is a second text backend: Skald now vendors

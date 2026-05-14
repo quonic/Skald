@@ -76,6 +76,7 @@ Widget_Kind :: enum u8 {
 	Menu_Bar,
 	Tree,
 	Color_Picker,
+	Emoji_Picker,
 	Combobox,
 	// Canvas is the framework escape hatch: a rectangular slot whose
 	// pixels come from a user draw callback. It carries no interactive

@@ -783,6 +783,41 @@ popover. Emits `on_change` live while dragging and on hex commit.
 
 **Example: `examples/35_color_picker`.**
 
+### emoji_picker
+
+```odin
+emoji_picker(ctx, on_pick: proc(emoji: string) -> Msg,
+             recents = nil, disabled = false)
+```
+
+😀 trigger that opens a popover with a substring-match search bar,
+optional recents row, 9 Unicode CLDR category tabs, a paginated 8 × 6
+grid of ~1150 single-codepoint emojis, and a Fitzpatrick skin-tone
+toolbar. Picking a person / hand emoji while a non-default tone is
+selected appends the modifier codepoint to the returned string.
+
+Coverage is the intersection of Twemoji-Mozilla (Skald's bundled
+colour-emoji font) and Unicode emoji-test.txt. ZWJ sequences
+(family compositions, mixed-tone people pairs) are out of scope
+for v1.
+
+`recents` is **app-owned**: pass a `[]string` slice of recently
+picked emojis, most-recent-first; the picker renders a row above the
+tabs whenever the slice is non-empty. Maintain it on `State` however
+fits — a fixed-size ring, JSON-persisted across sessions, whatever.
+Setting it to `nil` (the default) hides the row entirely.
+
+The picked emoji string lives in the temp arena — clone it before
+storing on persistent state, same convention as any Msg-borne string.
+
+Backend: colour emoji renders properly only under runa
+(`SKALD_RUNA=1`). Under the default fontstash backend cells still
+hit-test, but glyphs fall through to `.notdef` tofu because
+fontstash doesn't decode COLR tables. Apps that adopt this widget
+typically pair it with `font_use_default_emoji(ctx.renderer)`.
+
+**Example: `examples/46_emoji_picker`.**
+
 ---
 
 ## Lists and tables

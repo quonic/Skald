@@ -826,6 +826,64 @@ COLRv0 set like Twemoji.
 A working example lives in
 [`examples/45_colour_emoji`](../examples/45_colour_emoji).
 
+### Add an emoji picker
+
+For chat / comment / messaging UIs, drop in `emoji_picker` next to
+the relevant `text_input`. The widget is self-contained: a 😀 trigger
+button that opens a popover with search, categories, paginated grid,
+and Fitzpatrick skin-tone toolbar.
+
+```odin
+State :: struct {
+    draft:   string,
+    recents: [dynamic]string,   // most-recent-first
+}
+
+Msg :: union { Pick_Emoji: Pick_Emoji_Payload, … }
+Pick_Emoji_Payload :: struct { emoji: string }
+
+on_pick :: proc(e: string) -> Msg {
+    return Pick_Emoji{emoji = strings.clone(e)}
+}
+
+update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
+    s := s
+    switch v in m {
+    case Pick_Emoji:
+        // Append to the draft, push onto recents (de-duped, capped).
+        s.draft = strings.concatenate({s.draft, v.emoji})
+        for r, i in s.recents {
+            if r == v.emoji { ordered_remove(&s.recents, i); break }
+        }
+        inject_at(&s.recents, 0, v.emoji)
+        for len(s.recents) > 8 { pop(&s.recents) }
+    }
+    return s, {}
+}
+
+view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
+    skald.font_use_default_emoji(ctx.renderer)   // first-frame
+    return skald.row(
+        skald.text_input(ctx, s.draft, …),
+        skald.emoji_picker(ctx, on_pick, recents = s.recents[:]),
+        cross_align = .Center,
+    )
+}
+```
+
+The `recents` slice is app-owned — persist it however you persist
+the rest of the state. JSON to disk on `on_window_state_change`,
+embedded in `settings.db`, whatever fits.
+
+Backend: under runa (`SKALD_RUNA=1`) the picker renders Twemoji's
+colour glyphs. Under fontstash the popover still works but cells
+render as tofu — pair this widget with the colour-emoji recipe above
+and tell users to flip the env var, or wait for the default flip in
+the 1.x line.
+
+A working example lives in
+[`examples/46_emoji_picker`](../examples/46_emoji_picker).
+
 ### Load any font from a file path
 
 Both backends accept TTF / OTF bytes via `font_load`. For "let the
