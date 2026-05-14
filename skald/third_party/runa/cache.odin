@@ -21,6 +21,12 @@ import "shape"
 // Cache holds the caller-owned shape memoisation table. It's an
 // opaque struct — callers don't reach into the field set, just pass
 // `^Cache` to the shaping entry points.
+//
+// Thread safety: a `Cache` is **not** safe to share across threads
+// without external synchronisation. `shape_text_cached` writes to
+// the underlying map on miss. Consumers with multi-threaded work
+// (parallel layout passes, off-thread shaping for prefetch) either
+// keep one `Cache` per thread or wrap calls in their own mutex.
 Cache :: struct {
 	allocator: mem.Allocator,
 	entries:   map[Shape_Key]Cache_Entry,
@@ -31,11 +37,15 @@ Cache :: struct {
 // `font` is compared by pointer — the caller's Font struct must live
 // for the lifetime of the Cache. `text` is the caller's UTF-8 slice;
 // the cache clones it on insert so the original buffer can vary.
+// `axis_hash` folds the variable-font axis tuple into the key — at
+// a different `wght` value, the same (font, size, text) produces
+// different advances (via HVAR), so it must miss the cache.
 @(private)
 Shape_Key :: struct {
-	font_ptr: rawptr,
-	size:     f32,
-	text:     string,                // interned by the cache on insert
+	font_ptr:  rawptr,
+	size:      f32,
+	axis_hash: u64,
+	text:      string,                // interned by the cache on insert
 }
 
 @(private)
@@ -64,14 +74,15 @@ cache_destroy :: proc(c: ^Cache) {
 // The returned slice is owned by the Cache; do not modify it, and do
 // not retain it past `cache_destroy`.
 shape_text_cached :: proc(font: ^Font, text: string, size: f32, c: ^Cache, script_tag: parse.Tag = parse.LATN_SCRIPT, language_tag: parse.Tag = parse.DFLT_LANG) -> []Shaped_Glyph {
-	key := Shape_Key{font_ptr = font, size = size, text = text}
+	axis_hash := hash_axis_values(font._axis_values)
+	key := Shape_Key{font_ptr = font, size = size, axis_hash = axis_hash, text = text}
 	if existing, ok := c.entries[key]; ok {
 		return existing.glyphs
 	}
 
 	// Miss — clone the text key, shape, store.
 	owned_text := strings_clone(text, c.allocator)
-	stored_key := Shape_Key{font_ptr = font, size = size, text = owned_text}
+	stored_key := Shape_Key{font_ptr = font, size = size, axis_hash = axis_hash, text = owned_text}
 
 	buf := make([dynamic]Shaped_Glyph, 0, max(8, len(text)), c.allocator)
 	shape_into(font, owned_text, size, &buf, script_tag, language_tag)
@@ -116,6 +127,24 @@ measure_text_cached :: proc(text: string, opts: Paragraph_Opts, c: ^Cache) -> (w
 	return
 }
 
+// hash_axis_values folds a (small) array of normalised axis values
+// into a u64 cache-key component. The hash is collision-resistant
+// enough for variable-font use — fonts ship up to ~13 axes and
+// callers re-use the same axis tuple across many shape calls, so
+// the input domain is tiny. FNV-1a 64-bit over the raw f32 bits.
+@(private)
+hash_axis_values :: proc(values: []f32) -> u64 {
+	h: u64 = 0xCBF29CE484222325
+	for v in values {
+		bits := transmute(u32)v
+		for i in 0..<4 {
+			h ~= u64((bits >> (uint(i) * 8)) & 0xFF)
+			h *= 0x100000001B3
+		}
+	}
+	return h
+}
+
 // strings_clone copies `s` into `allocator`. core:strings's clone uses
 // context.allocator; we need an explicit one for cache ownership.
 @(private)
@@ -136,6 +165,8 @@ shape_into :: proc(font: ^Font, text: string, size: f32, out: ^[dynamic]Shaped_G
 		hmtx         = &font._hmtx,
 		gsub         = &font._gsub if font._has_gsub else nil,
 		gpos         = &font._gpos if font._has_gpos else nil,
+		hvar         = &font._hvar if font._has_hvar else nil,
+		axis_values  = font._axis_values,
 		units_per_em = font.units_per_em,
 	}
 	opts := shape.Shape_Run_Opts{script = script_tag, language = language_tag}

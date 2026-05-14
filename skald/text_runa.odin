@@ -16,6 +16,13 @@ import runa "third_party/runa"
 // renderer is untouched. Colour-emoji (RGBA) glyphs are detected but
 // skipped — they render as nothing until Phase 1b lights up the second
 // atlas + shader variant.
+// THREADING: `runa.Cache` writes to its `entries` map on every shape
+// miss, so it's single-thread-only — runa documents this explicitly.
+// Skald respects the contract by construction: `view` runs on the
+// main thread, `cmd_thread` workers can't reach `r.text.runa_state`,
+// and we never spawn a background thread that calls `measure_text` /
+// `draw_text` / `wrap_text`. If a future feature needs background
+// text work, it must own its own `Cache` and never touch this one.
 @(private)
 Text_Runa :: struct {
 	cache: runa.Cache,

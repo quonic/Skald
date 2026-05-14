@@ -65,6 +65,28 @@ gsub_get_lookup :: proc(g: ^Gsub, lookup_idx: u16, allocator := context.allocato
 	return read_lookup_info(g.data, g.lookup_list_off, lookup_idx, allocator)
 }
 
+// gsub_apply_single_at runs the type-1 (single-substitution) lookups
+// of `feature_tag` against a single buffer position. Returns true
+// if any substitution fired.
+//
+// Used by per-position feature gating — Arabic `isol` / `init` /
+// `medi` / `fina` need to fire only at glyphs whose joining state
+// matches that feature; a buffer-wide `gsub_apply_feature` would
+// over-substitute.
+gsub_apply_single_at :: proc(g: ^Gsub, gids: []Glyph_ID, pos: int, script_tag, lang_tag, feature_tag: Tag) -> bool {
+	if pos < 0 || pos >= len(gids) { return false }
+	indices, _ := gsub_resolve_feature_lookups(g, script_tag, lang_tag, feature_tag, context.temp_allocator)
+	for li in indices {
+		info, err := gsub_get_lookup(g, li, context.temp_allocator)
+		if err != .None { continue }
+		if info.type != 1 { continue }
+		for sub in info.subtable_offsets {
+			if apply_single(g.data, sub, gids, pos) { return true }
+		}
+	}
+	return false
+}
+
 // gsub_apply_feature walks `glyphs` left-to-right and applies every
 // lookup associated with `feature_tag` under (script, language).
 // Returns the total number of substitutions made (across all lookups).
@@ -116,7 +138,7 @@ gsub_dispatch_lookup :: proc(g: ^Gsub, info: ^Lookup_Info, glyphs: ^[dynamic]Gly
 	switch info.type {
 	case 1:
 		for sub in info.subtable_offsets {
-			if ok := apply_single(g.data, sub, glyphs, pos); ok {
+			if ok := apply_single(g.data, sub, glyphs[:], pos); ok {
 				return 1
 			}
 		}
@@ -143,7 +165,7 @@ gsub_dispatch_lookup :: proc(g: ^Gsub, info: ^Lookup_Info, glyphs: ^[dynamic]Gly
 // ---- Lookup type 1: Single substitution -----------------------------
 
 @(private)
-apply_single :: proc(data: []u8, sub_off: u32, glyphs: ^[dynamic]Glyph_ID, pos: int) -> bool {
+apply_single :: proc(data: []u8, sub_off: u32, glyphs: []Glyph_ID, pos: int) -> bool {
 	if u64(sub_off) + 6 > u64(len(data)) { return false }
 	format := u16(data[sub_off])<<8 | u16(data[sub_off + 1])
 	coverage_off := u32(u16(data[sub_off + 2])<<8 | u16(data[sub_off + 3]))

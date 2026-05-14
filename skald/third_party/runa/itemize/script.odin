@@ -18,6 +18,8 @@ References: UAX #24, "Unicode Script Property",
 */
 package itemize
 
+import "base:runtime"
+
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -78,6 +80,7 @@ script_of :: proc(r: rune) -> Script_Code {
 
 @(private="file")
 init_table :: proc() {
+	context.allocator = runtime.heap_allocator()    // process-lifetime cache
 	tmp := make([dynamic]Range, 0, 1024)
 	for line in strings.split_lines_iterator(&SCRIPTS_DATA_LINES) {
 		trimmed := strings.trim_space(line)

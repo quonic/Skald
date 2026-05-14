@@ -5,10 +5,13 @@ line-breaking, rasterization. Built first to replace fontstash +
 stb_truetype in [Skald](https://github.com/BuLEEto/Skald), designed
 to be useful for any Odin project that needs production-quality text.
 
-**Status:** v0.1 — first public release. Parse → shape → rasterize →
-atlas is wired end-to-end, with bench / fuzz / golden / UAX-conformance
-harnesses in place. The DoD scoreboard from PROPOSAL §12 lives in
-[`CHANGELOG.md`](CHANGELOG.md); the full design contract is in
+**Status:** v0.9-rc1 — *"Everything except complex-script shapers."*
+UAX #9 bidi at 100 %, UAX #29 grapheme clusters at 100 %, CFF2
+variable instances, COLRv1 emoji with true linear / radial / sweep
+gradients + composite blend modes, GPOS mark-to-ligature, and a
+frozen public API ([`API.md`](API.md)). v1.0 final lands the Indic
++ SEA shapers. DoD scoreboards per milestone live in
+[`CHANGELOG.md`](CHANGELOG.md); the design contract is in
 [`PROPOSAL.md`](PROPOSAL.md).
 
 ## What this is
@@ -33,8 +36,9 @@ from scratch in idiomatic Odin with zero C dependencies at v1.0.
 | Milestone | Scope |
 |-----------|-------|
 | **v0.1** | Latin / Cyrillic / Greek production quality. Ligatures, GPOS kerning, COLRv0 emoji, variable fonts, subpixel positioning. Skald can switch off fontstash here. |
-| **v0.5** | RTL support — UAX #9 bidi, Arabic shaper, Hebrew. COLRv1 gradient emoji. CFF2. |
-| **v1.0** | Complex scripts ship — Indic family, Thai / Lao / Khmer / Myanmar. API freeze. |
+| **v0.5** | RTL support — UAX #9 bidi at 100 %, Arabic shaper, Hebrew. COLRv1 linear-gradient emoji. CFF2 default instance. |
+| **v0.9-rc1** | API freeze. CFF2 non-default-instance (Item Variation Store), UAX #29 grapheme clusters at 100 %, radial + sweep gradients, COLR composite modes, GPOS mark-to-ligature. |
+| **v1.0** | Indic family + Thai / Lao / Khmer / Myanmar shapers. |
 
 Details, rationale, and per-phase deliverables: see [`PROPOSAL.md`](PROPOSAL.md).
 
@@ -74,8 +78,12 @@ those land. See `PROPOSAL.md` §17 for the full attribution plan.
 
 ## Contributing
 
-The v0.1 milestone is being built out — the vertical slice is in,
-the polish (analytic-coverage rasterizer, cache, UAX #14, atlas,
-variable-axis interpolation, cross-platform CI) is the active work.
-Open an issue if you spot a scope problem, a spec inaccuracy, or
-have a strong opinion on the API sketch in `PROPOSAL.md` §6.
+v0.9-rc1 is shipping — API frozen ([`API.md`](API.md)), bidi at
+100 %, graphemes at 100 %, COLRv1 gradients + composite modes
+real, CFF2 variations real. v1.0 final work picks up the Indic
+family (Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam,
+Gurmukhi, Gujarati, Odia) and SEA scripts (Thai, Lao, Myanmar,
+Khmer) — each shaper is its own module sharing a state-core, so
+the work parallelises. Open an issue if you spot a scope problem,
+a spec inaccuracy, or have a strong opinion on the API in
+`API.md` / `PROPOSAL.md` §6.

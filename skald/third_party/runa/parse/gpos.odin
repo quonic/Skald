@@ -75,10 +75,14 @@ Pos_Adjust :: struct {
 	y_advance:   i16,
 }
 
-// gpos_apply_feature walks `gids` and, for each pair of adjacent
-// glyphs, looks up the kerning adjustment under (script, language,
-// feature). The result lands in `adjusts[i]` — the adjustment for the
-// glyph at index i in `gids`. `adjusts` must be sized to `len(gids)`.
+// gpos_apply_feature walks `gids` and applies positioning lookups for
+// the named feature under (script, language). Each glyph's
+// `adjusts[i]` receives the cumulative shift.
+//
+// Supported lookup types at v0.5:
+//
+//   Type 2 — Pair positioning (kerning).
+//   Type 4 — Mark-to-base attachment (`mark` feature).
 //
 // Returns the number of adjustments applied.
 gpos_apply_feature :: proc(g: ^Gpos, gids: []Glyph_ID, adjusts: []Pos_Adjust, script_tag, lang_tag, feature_tag: Tag) -> (n: int) {
@@ -88,22 +92,72 @@ gpos_apply_feature :: proc(g: ^Gpos, gids: []Glyph_ID, adjusts: []Pos_Adjust, sc
 	for li in indices {
 		info, err := gpos_get_lookup(g, li, context.temp_allocator)
 		if err != .None { continue }
-		if info.type != 2 { continue }              // v0.1: pair pos only
 
-		for i in 0..<len(gids) - 1 {
-			for sub in info.subtable_offsets {
-				v1, v2, ok := pair_pos_lookup(g.data, sub, gids[i], gids[i + 1])
-				if !ok { continue }
-				adjusts[i].x_placement += v1.x_placement
-				adjusts[i].y_placement += v1.y_placement
-				adjusts[i].x_advance   += v1.x_advance
-				adjusts[i].y_advance   += v1.y_advance
-				adjusts[i + 1].x_placement += v2.x_placement
-				adjusts[i + 1].y_placement += v2.y_placement
-				adjusts[i + 1].x_advance   += v2.x_advance
-				adjusts[i + 1].y_advance   += v2.y_advance
-				n += 1
-				break
+		switch info.type {
+		case 2:
+			for i in 0..<len(gids) - 1 {
+				for sub in info.subtable_offsets {
+					v1, v2, ok := pair_pos_lookup(g.data, sub, gids[i], gids[i + 1])
+					if !ok { continue }
+					adjusts[i].x_placement += v1.x_placement
+					adjusts[i].y_placement += v1.y_placement
+					adjusts[i].x_advance   += v1.x_advance
+					adjusts[i].y_advance   += v1.y_advance
+					adjusts[i + 1].x_placement += v2.x_placement
+					adjusts[i + 1].y_placement += v2.y_placement
+					adjusts[i + 1].x_advance   += v2.x_advance
+					adjusts[i + 1].y_advance   += v2.y_advance
+					n += 1
+					break
+				}
+			}
+		case 4:
+			// Walk marks. For each glyph that lives in `markCoverage`,
+			// scan backward to find the most recent base in
+			// `baseCoverage`, ignoring intervening marks.
+			for i in 1..<len(gids) {
+				for sub in info.subtable_offsets {
+					adj, base_idx, ok := mark_to_base_lookup(g.data, sub, gids[:], adjusts, i)
+					if !ok { continue }
+					_ = base_idx
+					adjusts[i].x_placement += adj.x_placement
+					adjusts[i].y_placement += adj.y_placement
+					n += 1
+					break
+				}
+			}
+		case 5:
+			// Mark-to-ligature: like type 4 but the base is a
+			// ligature glyph composed of multiple components, and the
+			// mark attaches to one specific component's anchor. v0.9
+			// attaches every mark to the *last* component; full
+			// component-index tracking arrives alongside the ligature-
+			// component bookkeeping in the GSUB shaper for v1.0.
+			for i in 1..<len(gids) {
+				for sub in info.subtable_offsets {
+					adj, base_idx, ok := mark_to_ligature_lookup(g.data, sub, gids[:], adjusts, i)
+					if !ok { continue }
+					_ = base_idx
+					adjusts[i].x_placement += adj.x_placement
+					adjusts[i].y_placement += adj.y_placement
+					n += 1
+					break
+				}
+			}
+		case 6:
+			// Mark-to-mark: identical to type 4 but the "base" must
+			// itself be a mark. Stops scanning at the first
+			// non-mark glyph rather than crossing into letters.
+			for i in 1..<len(gids) {
+				for sub in info.subtable_offsets {
+					adj, base_idx, ok := mark_to_mark_lookup(g.data, sub, gids[:], adjusts, i)
+					if !ok { continue }
+					_ = base_idx
+					adjusts[i].x_placement += adj.x_placement
+					adjusts[i].y_placement += adj.y_placement
+					n += 1
+					break
+				}
 			}
 		}
 	}
@@ -183,6 +237,291 @@ pair_pos_format_2 :: proc(data: []u8, sub_off: u32, fmt1, fmt2: u16, v1_size, v2
 	v2 = read_value_record(data, cell + u32(v1_size), fmt2)
 	ok = true
 	return
+}
+
+// mark_to_base_lookup applies GPOS lookup type 4 (mark-to-base) at
+// position `mark_idx`. Returns the placement delta to add to the mark
+// glyph, plus the resolved base glyph index (for caller diagnostics).
+//
+// Subtable layout (format 1 only — the spec defines no others):
+//
+//   format             u16  = 1
+//   mark_coverage_off  Offset16  (relative to subtable)
+//   base_coverage_off  Offset16
+//   mark_class_count   u16
+//   mark_array_off     Offset16
+//   base_array_off     Offset16
+//
+// MarkArray:   count u16, mark_records[count] = { class u16, anchor_off Offset16 (from MarkArray start) }
+// BaseArray:   count u16, base_records[count] each carrying `mark_class_count` anchor offsets
+// Anchor (fmt 1): format u16 = 1, x i16, y i16. Formats 2/3 add an
+//                 attachment point / device tables; we read just the x/y
+//                 for any format and ignore the rest.
+@(private)
+mark_to_base_lookup :: proc(data: []u8, sub_off: u32, gids: []Glyph_ID, adjusts: []Pos_Adjust, mark_idx: int) -> (adj: Pos_Adjust, base_idx: int, ok: bool) {
+	if u64(sub_off) + 12 > u64(len(data)) { return }
+	format := u16(data[sub_off])<<8 | u16(data[sub_off + 1])
+	if format != 1 { return }
+	mark_cov_off := u32(u16(data[sub_off + 2])<<8 | u16(data[sub_off + 3]))
+	base_cov_off := u32(u16(data[sub_off + 4])<<8 | u16(data[sub_off + 5]))
+	mark_class_count := u16(data[sub_off + 6])<<8 | u16(data[sub_off + 7])
+	mark_array_off := u32(u16(data[sub_off + 8])<<8 | u16(data[sub_off + 9]))
+	base_array_off := u32(u16(data[sub_off + 10])<<8 | u16(data[sub_off + 11]))
+
+	mark_cov_idx := coverage_index(data, sub_off + mark_cov_off, gids[mark_idx])
+	if mark_cov_idx < 0 { return }
+
+	// Scan back for the most recent glyph in base coverage. Glyphs
+	// that are themselves in mark coverage skip — they're attachable
+	// children of an earlier base. Anything else (un-classified
+	// glyph) also acts as a base "barrier" for safety: don't reach
+	// across word boundaries.
+	bi := -1
+	for j := mark_idx - 1; j >= 0; j -= 1 {
+		idx := coverage_index(data, sub_off + base_cov_off, gids[j])
+		if idx >= 0 { bi = j; break }
+		// If this glyph is a mark too, keep scanning; otherwise stop
+		// (e.g. a space glyph isn't a base, but it shouldn't anchor
+		// either).
+		if coverage_index(data, sub_off + mark_cov_off, gids[j]) >= 0 { continue }
+		return
+	}
+	if bi < 0 { return }
+	base_cov_idx := coverage_index(data, sub_off + base_cov_off, gids[bi])
+
+	// Read the mark record: { mark_class u16, anchor_off Offset16 }
+	mark_array_base := sub_off + mark_array_off
+	if u64(mark_array_base) + 2 > u64(len(data)) { return }
+	mark_count := u16(data[mark_array_base])<<8 | u16(data[mark_array_base + 1])
+	if u32(mark_cov_idx) >= u32(mark_count) { return }
+	rec_off := mark_array_base + 2 + u32(mark_cov_idx) * 4
+	if u64(rec_off) + 4 > u64(len(data)) { return }
+	mark_class  := u16(data[rec_off])<<8 | u16(data[rec_off + 1])
+	mark_anchor_off := u32(u16(data[rec_off + 2])<<8 | u16(data[rec_off + 3]))
+	if mark_class >= mark_class_count { return }
+	mx, my, mok := read_anchor(data, mark_array_base + mark_anchor_off)
+	if !mok { return }
+
+	// Read the base record: an array of `mark_class_count` anchor
+	// offsets (relative to BaseArray start).
+	base_array_base := sub_off + base_array_off
+	if u64(base_array_base) + 2 > u64(len(data)) { return }
+	base_count := u16(data[base_array_base])<<8 | u16(data[base_array_base + 1])
+	if u32(base_cov_idx) >= u32(base_count) { return }
+	base_rec_off := base_array_base + 2 + u32(base_cov_idx) * u32(mark_class_count) * 2
+	if u64(base_rec_off) + u64(mark_class_count) * 2 > u64(len(data)) { return }
+	anchor_off_pos := base_rec_off + u32(mark_class) * 2
+	base_anchor_off := u32(u16(data[anchor_off_pos])<<8 | u16(data[anchor_off_pos + 1]))
+	if base_anchor_off == 0 { return }                  // null offset — this class doesn't attach here
+	bx, by, bok := read_anchor(data, base_array_base + base_anchor_off)
+	if !bok { return }
+
+	// Mark placement: base.anchor - mark.anchor, then subtract the
+	// running advance of every glyph between the base and the mark
+	// so the mark lands ON the base anchor rather than at the mark's
+	// pen position.
+	dx: i32 = i32(bx) - i32(mx)
+	dy: i32 = i32(by) - i32(my)
+	for j := bi; j < mark_idx; j += 1 {
+		dx -= i32(adjusts[j].x_advance)
+	}
+	adj.x_placement = i32_to_i16_sat(dx)
+	adj.y_placement = i32_to_i16_sat(dy)
+	base_idx = bi
+	ok = true
+	return
+}
+
+// mark_to_ligature_lookup applies GPOS lookup type 5 at `mark_idx`.
+//
+// Subtable layout (format 1 only):
+//   format               u16 = 1
+//   mark_coverage_off    Offset16
+//   ligature_coverage_off Offset16
+//   mark_class_count     u16
+//   mark_array_off       Offset16
+//   ligature_array_off   Offset16
+//
+// LigatureArray:
+//   ligature_count       u16
+//   ligature_attach_offs[ligature_count]  u16 (relative to LigatureArray)
+//
+// LigatureAttach:
+//   component_count      u16
+//   component_records[component_count] each carrying `mark_class_count`
+//   anchor offsets (relative to LigatureAttach start).
+//
+// The mark attaches to one *component* of the ligature. v0.9 binds
+// to the LAST component when no component-index tracking is
+// available; the typical Indic / Arabic shaping pipeline overrides
+// this once GSUB ligature substitution records component spans.
+@(private)
+mark_to_ligature_lookup :: proc(data: []u8, sub_off: u32, gids: []Glyph_ID, adjusts: []Pos_Adjust, mark_idx: int) -> (adj: Pos_Adjust, base_idx: int, ok: bool) {
+	if u64(sub_off) + 12 > u64(len(data)) { return }
+	format := u16(data[sub_off])<<8 | u16(data[sub_off + 1])
+	if format != 1 { return }
+	mark_cov_off := u32(u16(data[sub_off + 2])<<8 | u16(data[sub_off + 3]))
+	lig_cov_off  := u32(u16(data[sub_off + 4])<<8 | u16(data[sub_off + 5]))
+	mark_class_count := u16(data[sub_off + 6])<<8 | u16(data[sub_off + 7])
+	mark_array_off   := u32(u16(data[sub_off + 8])<<8 | u16(data[sub_off + 9]))
+	lig_array_off    := u32(u16(data[sub_off + 10])<<8 | u16(data[sub_off + 11]))
+
+	mark_cov_idx := coverage_index(data, sub_off + mark_cov_off, gids[mark_idx])
+	if mark_cov_idx < 0 { return }
+
+	// Scan back to find the ligature.
+	bi := -1
+	for j := mark_idx - 1; j >= 0; j -= 1 {
+		idx := coverage_index(data, sub_off + lig_cov_off, gids[j])
+		if idx >= 0 { bi = j; break }
+		if coverage_index(data, sub_off + mark_cov_off, gids[j]) >= 0 { continue }
+		return
+	}
+	if bi < 0 { return }
+	lig_cov_idx := coverage_index(data, sub_off + lig_cov_off, gids[bi])
+
+	// Read mark record.
+	mark_array_base := sub_off + mark_array_off
+	if u64(mark_array_base) + 2 > u64(len(data)) { return }
+	mark_count := u16(data[mark_array_base])<<8 | u16(data[mark_array_base + 1])
+	if u32(mark_cov_idx) >= u32(mark_count) { return }
+	rec_off := mark_array_base + 2 + u32(mark_cov_idx) * 4
+	if u64(rec_off) + 4 > u64(len(data)) { return }
+	mark_class := u16(data[rec_off])<<8 | u16(data[rec_off + 1])
+	mark_anchor_off := u32(u16(data[rec_off + 2])<<8 | u16(data[rec_off + 3]))
+	if mark_class >= mark_class_count { return }
+	mx, my, mok := read_anchor(data, mark_array_base + mark_anchor_off)
+	if !mok { return }
+
+	// Walk LigatureArray → LigatureAttach for the matched ligature
+	// glyph.
+	lig_array_base := sub_off + lig_array_off
+	if u64(lig_array_base) + 2 > u64(len(data)) { return }
+	lig_count := u16(data[lig_array_base])<<8 | u16(data[lig_array_base + 1])
+	if u32(lig_cov_idx) >= u32(lig_count) { return }
+	attach_off_pos := lig_array_base + 2 + u32(lig_cov_idx) * 2
+	if u64(attach_off_pos) + 2 > u64(len(data)) { return }
+	attach_rel := u32(u16(data[attach_off_pos])<<8 | u16(data[attach_off_pos + 1]))
+	attach_base := lig_array_base + attach_rel
+	if u64(attach_base) + 2 > u64(len(data)) { return }
+	component_count := u16(data[attach_base])<<8 | u16(data[attach_base + 1])
+	if component_count == 0 { return }
+
+	// Default to the last component until ligature-component tracking
+	// lands. Each component record holds `mark_class_count` Offset16
+	// anchor offsets (relative to LigatureAttach start).
+	component_idx := u32(component_count) - 1
+	comp_rec_off := attach_base + 2 + component_idx * u32(mark_class_count) * 2
+	if u64(comp_rec_off) + u64(mark_class_count) * 2 > u64(len(data)) { return }
+	anchor_off_pos := comp_rec_off + u32(mark_class) * 2
+	lig_anchor_off := u32(u16(data[anchor_off_pos])<<8 | u16(data[anchor_off_pos + 1]))
+	if lig_anchor_off == 0 { return }
+	bx, by, bok := read_anchor(data, attach_base + lig_anchor_off)
+	if !bok { return }
+
+	dx: i32 = i32(bx) - i32(mx)
+	dy: i32 = i32(by) - i32(my)
+	for j := bi; j < mark_idx; j += 1 {
+		dx -= i32(adjusts[j].x_advance)
+	}
+	adj.x_placement = i32_to_i16_sat(dx)
+	adj.y_placement = i32_to_i16_sat(dy)
+	base_idx = bi
+	ok = true
+	return
+}
+
+// mark_to_mark_lookup applies GPOS lookup type 6 (mark-to-mark) at
+// position `mark_idx`. Subtable layout mirrors type 4 but the
+// "base" array is a `Mark2Array` of mark glyphs:
+//
+//   format               u16  = 1
+//   mark1_coverage_off   Offset16   (the attaching mark)
+//   mark2_coverage_off   Offset16   (the previously-placed mark)
+//   mark_class_count     u16
+//   mark1_array_off      Offset16
+//   mark2_array_off      Offset16
+//
+// The scan stops at the first non-mark2 glyph: stacked marks land on
+// their immediate mark-predecessor, not across word boundaries.
+@(private)
+mark_to_mark_lookup :: proc(data: []u8, sub_off: u32, gids: []Glyph_ID, adjusts: []Pos_Adjust, mark_idx: int) -> (adj: Pos_Adjust, base_idx: int, ok: bool) {
+	if u64(sub_off) + 12 > u64(len(data)) { return }
+	format := u16(data[sub_off])<<8 | u16(data[sub_off + 1])
+	if format != 1 { return }
+	m1_cov_off := u32(u16(data[sub_off + 2])<<8 | u16(data[sub_off + 3]))
+	m2_cov_off := u32(u16(data[sub_off + 4])<<8 | u16(data[sub_off + 5]))
+	mark_class_count := u16(data[sub_off + 6])<<8 | u16(data[sub_off + 7])
+	m1_array_off := u32(u16(data[sub_off + 8])<<8 | u16(data[sub_off + 9]))
+	m2_array_off := u32(u16(data[sub_off + 10])<<8 | u16(data[sub_off + 11]))
+
+	m1_cov_idx := coverage_index(data, sub_off + m1_cov_off, gids[mark_idx])
+	if m1_cov_idx < 0 { return }
+
+	// Look for the immediate mark2 predecessor.
+	bi := -1
+	for j := mark_idx - 1; j >= 0; j -= 1 {
+		idx := coverage_index(data, sub_off + m2_cov_off, gids[j])
+		if idx >= 0 { bi = j; break }
+		break                                       // not a mark2 — stop
+	}
+	if bi < 0 { return }
+	m2_cov_idx := coverage_index(data, sub_off + m2_cov_off, gids[bi])
+
+	// Mark1 anchor.
+	m1_array_base := sub_off + m1_array_off
+	if u64(m1_array_base) + 2 > u64(len(data)) { return }
+	m1_count := u16(data[m1_array_base])<<8 | u16(data[m1_array_base + 1])
+	if u32(m1_cov_idx) >= u32(m1_count) { return }
+	rec_off := m1_array_base + 2 + u32(m1_cov_idx) * 4
+	if u64(rec_off) + 4 > u64(len(data)) { return }
+	mark_class := u16(data[rec_off])<<8 | u16(data[rec_off + 1])
+	m1_anchor_off := u32(u16(data[rec_off + 2])<<8 | u16(data[rec_off + 3]))
+	if mark_class >= mark_class_count { return }
+	mx, my, mok := read_anchor(data, m1_array_base + m1_anchor_off)
+	if !mok { return }
+
+	// Mark2 anchor.
+	m2_array_base := sub_off + m2_array_off
+	if u64(m2_array_base) + 2 > u64(len(data)) { return }
+	m2_count := u16(data[m2_array_base])<<8 | u16(data[m2_array_base + 1])
+	if u32(m2_cov_idx) >= u32(m2_count) { return }
+	m2_rec_off := m2_array_base + 2 + u32(m2_cov_idx) * u32(mark_class_count) * 2
+	if u64(m2_rec_off) + u64(mark_class_count) * 2 > u64(len(data)) { return }
+	anchor_off_pos := m2_rec_off + u32(mark_class) * 2
+	m2_anchor_off := u32(u16(data[anchor_off_pos])<<8 | u16(data[anchor_off_pos + 1]))
+	if m2_anchor_off == 0 { return }
+	bx, by, bok := read_anchor(data, m2_array_base + m2_anchor_off)
+	if !bok { return }
+
+	dx: i32 = i32(bx) - i32(mx)
+	dy: i32 = i32(by) - i32(my)
+	for j := bi; j < mark_idx; j += 1 {
+		dx -= i32(adjusts[j].x_advance)
+	}
+	adj.x_placement = i32_to_i16_sat(dx)
+	adj.y_placement = i32_to_i16_sat(dy)
+	base_idx = bi
+	ok = true
+	return
+}
+
+@(private)
+read_anchor :: proc(data: []u8, off: u32) -> (x, y: i16, ok: bool) {
+	if u64(off) + 6 > u64(len(data)) { return }
+	// All anchor formats start with `format u16, x i16, y i16`. Higher
+	// formats append optional attachment / device data we ignore.
+	x = i16(u16(data[off + 2])<<8 | u16(data[off + 3]))
+	y = i16(u16(data[off + 4])<<8 | u16(data[off + 5]))
+	ok = true
+	return
+}
+
+@(private)
+i32_to_i16_sat :: #force_inline proc(v: i32) -> i16 {
+	if v >  32767 { return  32767 }
+	if v < -32768 { return -32768 }
+	return i16(v)
 }
 
 @(private)

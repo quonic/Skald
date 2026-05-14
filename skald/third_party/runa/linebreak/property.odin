@@ -16,6 +16,8 @@ References: UAX #14 §6 "Line_Break Property Definitions",
 */
 package linebreak
 
+import "base:runtime"
+
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -205,6 +207,10 @@ line_break_class :: proc(r: rune) -> Line_Break_Class {
 
 @(private="file")
 init_lb_table :: proc() {
+	// Allocate from the runtime heap, NOT from `context.allocator`.
+	// The data lives for the process lifetime; using context.allocator
+	// would let test-scoped tracking allocators flag it as a leak.
+	context.allocator = runtime.heap_allocator()
 	tmp := make([dynamic]Range, 0, 4096)
 	for line in strings.split_lines_iterator(&LB_DATA_LINES) {
 		// Skip blanks and comments.

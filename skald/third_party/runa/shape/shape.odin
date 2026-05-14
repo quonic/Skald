@@ -39,11 +39,17 @@ Shaped_Glyph :: struct {
 // `gsub = nil` / `gpos = nil` for fonts that lack those tables — the
 // shaper degrades gracefully (advances from `hmtx` only, no
 // substitution, no kerning).
+//
+// `hvar` + `axis_values` are optional variable-font state. When
+// supplied, the shaper applies HVAR advance-width deltas so the
+// emitted `x_advance` tracks the selected instance.
 Shape_Inputs :: struct {
 	cmap:         ^parse.Cmap,
 	hmtx:         ^parse.Hmtx_Table,
 	gsub:         ^parse.Gsub,                // may be nil
 	gpos:         ^parse.Gpos,                // may be nil
+	hvar:         ^parse.Hvar,                // may be nil (static font or no HVAR)
+	axis_values:  []f32,                       // nil or all-zero → default instance
 	units_per_em: u16,
 }
 
@@ -54,6 +60,12 @@ Shape_Run_Opts :: struct {
 	// Add per-call feature overrides if/when the API matures.
 }
 
+@(private)
+axis_values_non_default :: proc(values: []f32) -> bool {
+	for v in values { if v != 0 { return true } }
+	return false
+}
+
 // shape_run shapes `text` for one font at `size` pixels, appending to
 // `out`. Existing entries in `out` are kept — the caller can reuse the
 // dynamic array across calls. Allocations made during shaping land in
@@ -62,15 +74,18 @@ shape_run :: proc(in_: ^Shape_Inputs, opts: Shape_Run_Opts, text: string, size: 
 	scale := size / f32(in_.units_per_em)
 
 	// Stage 1: map codepoints to glyph IDs, recording the source byte
-	// offset for cluster tracking.
-	gids := make([dynamic]parse.Glyph_ID, 0, len(text), context.temp_allocator)
-	clusters := make([dynamic]u32, 0, len(text), context.temp_allocator)
+	// offset for cluster tracking + the raw rune for downstream
+	// Arabic / joining state computation.
+	gids     := make([dynamic]parse.Glyph_ID, 0, len(text), context.temp_allocator)
+	clusters := make([dynamic]u32,            0, len(text), context.temp_allocator)
+	runes    := make([dynamic]rune,           0, len(text), context.temp_allocator)
 
 	byte_idx: u32 = 0
 	for r in text {
 		gid := parse.cmap_lookup(in_.cmap, r)
 		append(&gids, gid)
 		append(&clusters, byte_idx)
+		append(&runes, r)
 
 		// Advance byte index by the UTF-8 length of the codepoint we
 		// just consumed.
@@ -78,6 +93,27 @@ shape_run :: proc(in_: ^Shape_Inputs, opts: Shape_Run_Opts, text: string, size: 
 		else if r < 0x800 { byte_idx += 2 }
 		else if r < 0x10000 { byte_idx += 3 }
 		else { byte_idx += 4 }
+	}
+
+	// Stage 1b: Arabic / cursive-joining per-position substitution.
+	// For runs whose script is `arab` (or another joining script),
+	// compute each glyph's joining form and apply the matching
+	// `isol` / `init` / `medi` / `fina` GSUB feature *only at that
+	// position*. Buffer-wide `gsub_apply_feature` over-substitutes;
+	// per-position gating is what HarfBuzz and friends do.
+	if in_.gsub != nil && opts.script == parse.tag("arab") {
+		forms := make([]Joining_Form, len(runes), context.temp_allocator)
+		arabic_join_state(runes[:], forms)
+		for i in 0..<len(forms) {
+			ft: parse.Tag
+			switch forms[i] {
+			case .Isolated: ft = parse.tag("isol")
+			case .Initial:  ft = parse.tag("init")
+			case .Medial:   ft = parse.tag("medi")
+			case .Final:    ft = parse.tag("fina")
+			}
+			parse.gsub_apply_single_at(in_.gsub, gids[:], i, opts.script, opts.language, ft)
+		}
 	}
 
 	// Stage 2: GSUB. Apply v0.1 features in the canonical order. The
@@ -116,16 +152,24 @@ shape_run :: proc(in_: ^Shape_Inputs, opts: Shape_Run_Opts, text: string, size: 
 	// Stage 3: per-glyph horizontal advance from hmtx.
 	adjusts := make([]parse.Pos_Adjust, len(gids), context.temp_allocator)
 
-	// Stage 4: GPOS — apply 'kern' feature in font units, then convert
-	// the whole shebang to pixels.
+	// Stage 4: GPOS — apply pair-positioning + mark-attachment
+	// features in font units. `kern` adjusts advance/letter spacing;
+	// `mark` snaps mark glyphs to base-glyph anchor points; `mkmk`
+	// stacks marks on previously-placed marks.
 	if in_.gpos != nil {
 		parse.gpos_apply_feature(in_.gpos, gids[:], adjusts, opts.script, opts.language, parse.tag("kern"))
+		parse.gpos_apply_feature(in_.gpos, gids[:], adjusts, opts.script, opts.language, parse.tag("mark"))
+		parse.gpos_apply_feature(in_.gpos, gids[:], adjusts, opts.script, opts.language, parse.tag("mkmk"))
 	}
 
 	// Stage 5: emit Shaped_Glyph slice in pixel space.
+	apply_hvar := in_.hvar != nil && axis_values_non_default(in_.axis_values)
 	for i in 0..<len(gids) {
 		m := parse.hmtx_glyph_metric(in_.hmtx, gids[i])
 		advance_units := f32(m.advance_width) + f32(adjusts[i].x_advance)
+		if apply_hvar {
+			advance_units += f32(parse.hvar_advance_delta(in_.hvar, gids[i], in_.axis_values))
+		}
 		x_off_units   := f32(adjusts[i].x_placement)
 		y_off_units   := f32(adjusts[i].y_placement)
 

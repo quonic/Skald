@@ -22,11 +22,19 @@ COLR_VERSION_1 :: u16(1)
 COLR_FOREGROUND_PALETTE_INDEX :: u16(0xFFFF)
 
 Colr :: struct {
-	data:                  []u8,
+	data:                   []u8,
+	version:                u16,
 	num_base_glyph_records: u16,
 	base_glyph_records_off: u32,
 	layer_records_off:      u32,
 	num_layer_records:      u16,
+
+	// COLRv1 extras (zero on a v0 font).
+	base_glyph_list_off:    u32,
+	layer_list_off:         u32,
+	clip_list_off:          u32,
+	v1_paint_count:         u32,
+	v1_layer_count:         u32,
 }
 
 new_colr :: proc(data: []u8) -> (c: Colr, err: Error) {
@@ -37,10 +45,36 @@ new_colr :: proc(data: []u8) -> (c: Colr, err: Error) {
 		return
 	}
 	c.data                   = data
+	c.version                = version
 	c.num_base_glyph_records = read_u16(&r) or_return
 	c.base_glyph_records_off = read_u32(&r) or_return
 	c.layer_records_off      = read_u32(&r) or_return
 	c.num_layer_records      = read_u16(&r) or_return
+
+	if version >= 1 {
+		// COLRv1 header extensions: BaseGlyphList, LayerList, ClipList
+		// offsets (Offset32) + ItemVariationStore + VarIndexMap. We
+		// only read the first three; variations are deferred.
+		c.base_glyph_list_off = read_u32(&r) or_return
+		c.layer_list_off      = read_u32(&r) or_return
+		c.clip_list_off       = read_u32(&r) or_return
+		// VarIndexMap + ItemVariationStore offsets follow — ignored.
+
+		if c.base_glyph_list_off != 0 {
+			off := c.base_glyph_list_off
+			if u64(off) + 4 <= u64(len(data)) {
+				c.v1_paint_count = u32(data[off])<<24 | u32(data[off + 1])<<16 |
+				                   u32(data[off + 2])<<8 | u32(data[off + 3])
+			}
+		}
+		if c.layer_list_off != 0 {
+			off := c.layer_list_off
+			if u64(off) + 4 <= u64(len(data)) {
+				c.v1_layer_count = u32(data[off])<<24 | u32(data[off + 1])<<16 |
+				                   u32(data[off + 2])<<8 | u32(data[off + 3])
+			}
+		}
+	}
 	return
 }
 
@@ -58,7 +92,23 @@ Colr_Layer :: struct {
 // colr_layers returns a slice of layers for `gid`, or nil if `gid`
 // isn't a colour-base glyph. The returned slice is a heap allocation;
 // caller frees with `delete`.
+//
+// v1 paint trees are tried first; on miss, the v0 BaseGlyphRecord
+// table is consulted (most COLRv1 fonts ship a v0 fallback for
+// backwards compatibility).
 colr_layers :: proc(c: ^Colr, gid: Glyph_ID, allocator := context.allocator) -> (layers: []Colr_Layer, err: Error) {
+	// COLRv1 path.
+	if c.version >= 1 && c.base_glyph_list_off != 0 {
+		buf := make([dynamic]Colr_Layer, 0, 8, allocator)
+		if colr_v1_layers(c, gid, &buf) {
+			if len(buf) == 0 { delete(buf); return }
+			layers = buf[:]
+			return
+		}
+		delete(buf)
+	}
+
+	// COLRv0 path.
 	first_layer, num_layers, ok := find_base_glyph_record(c, gid)
 	if !ok { return }                            // gid not a colour base — return empty
 	if num_layers == 0 { return }
