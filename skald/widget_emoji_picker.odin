@@ -151,13 +151,26 @@ _emoji_picker_impl :: proc(
 	max_page := max(0, (total - 1) / EMOJI_PICKER_PER_PG)
 	if page > max_page { page = max_page; st.drag_donor = page }
 
+	// Tones only apply to People & Body (and any future skin-tone-base
+	// emojis). Suppress the tone strip on categories / searches where
+	// none of the visible entries respond, so the swatches don't look
+	// broken when the user clicks one and the grid doesn't change.
+	tones_apply := false
+	for idx in results {
+		if emoji_table[idx].has_skin { tones_apply = true; break }
+	}
+
 	// Popover geometry.
 	overlay_pad := th.spacing.md
 	border_w    := f32(1)
 	gap         := th.spacing.sm
 	tabs_h      := EMOJI_TAB_SIZE
 	grid_h      := f32(EMOJI_PICKER_ROWS) * EMOJI_CELL_SIZE
-	footer_h    := f32(36)        // pagination + skin tone strip
+	tone_h      := f32(28)
+	page_text_h := f32(18)
+	tone_page_gap := f32(2)
+	footer_h    := page_text_h
+	if tones_apply { footer_h = tone_h + tone_page_gap + page_text_h }
 	header_h := EMOJI_SEARCH_H + gap
 	if recents_visible { header_h += EMOJI_RECENTS_H + gap }
 	if !searching     { header_h += tabs_h + gap }
@@ -293,12 +306,13 @@ _emoji_picker_impl :: proc(
 
 	// Pagination + skin tone hit-tests in the footer.
 	arrow_w := f32(28)
-	prev_rect := Rect{footer_rect.x, footer_rect.y, arrow_w, footer_h}
-	next_rect := Rect{footer_rect.x + footer_rect.w - arrow_w, footer_rect.y, arrow_w, footer_h}
+	arrow_hit_h := tone_h if tones_apply else footer_h
+	prev_rect := Rect{footer_rect.x, footer_rect.y, arrow_w, arrow_hit_h}
+	next_rect := Rect{footer_rect.x + footer_rect.w - arrow_w, footer_rect.y, arrow_w, arrow_hit_h}
 	tone_w    := f32(26)
 	tone_strip_w := tone_w * f32(len(emoji_skin_tones))
 	tone_origin_x := footer_rect.x + (footer_rect.w - tone_strip_w) / 2
-	tone_rect := Rect{tone_origin_x, footer_rect.y + (footer_h - 28)/2, tone_strip_w, 28}
+	tone_rect := Rect{tone_origin_x, footer_rect.y, tone_strip_w, tone_h}
 	if st.open && ctx.input.mouse_pressed[.Left] {
 		if rect_contains_point(prev_rect, ctx.input.mouse_pos) && page > 0 {
 			page         -= 1
@@ -306,7 +320,7 @@ _emoji_picker_impl :: proc(
 		} else if rect_contains_point(next_rect, ctx.input.mouse_pos) && page < max_page {
 			page         += 1
 			st.drag_donor = page
-		} else if rect_contains_point(tone_rect, ctx.input.mouse_pos) {
+		} else if tones_apply && rect_contains_point(tone_rect, ctx.input.mouse_pos) {
 			col_idx := int((ctx.input.mouse_pos.x - tone_rect.x) / tone_w)
 			if col_idx >= 0 && col_idx < len(emoji_skin_tones) {
 				tone = col_idx
@@ -446,17 +460,23 @@ _emoji_picker_impl :: proc(
 		}
 		row_views[r] = row(..cell_views, spacing = 0, height = EMOJI_CELL_SIZE)
 	}
-	grid_view := col(..row_views, spacing = 0, width = grid_rect.w, height = grid_h)
+	grid_inner := col(..row_views, spacing = 0, width = grid_rect.w, height = grid_h)
+	grid_view := col(
+		grid_inner,
+		width  = inner_w, height = grid_h,
+		main_align = .Center, cross_align = .Center,
+	)
 
 	// Footer — < arrow, skin-tone strip, page label, > arrow.
 	prev_color := th.color.fg
 	if page == 0 { prev_color = th.color.fg_muted }
 	next_color := th.color.fg
 	if page >= max_page { next_color = th.color.fg_muted }
+	arrow_h := footer_h if !tones_apply else tone_h
 	prev_arrow := col(text("◀", prev_color, th.font.size_md),
-		width = arrow_w, height = footer_h, main_align = .Center, cross_align = .Center)
+		width = arrow_w, height = arrow_h, main_align = .Center, cross_align = .Center)
 	next_arrow := col(text("▶", next_color, th.font.size_md),
-		width = arrow_w, height = footer_h, main_align = .Center, cross_align = .Center)
+		width = arrow_w, height = arrow_h, main_align = .Center, cross_align = .Center)
 
 	tone_cells := make([]View, len(emoji_skin_tones), context.temp_allocator)
 	for i in 0..<len(emoji_skin_tones) {
@@ -464,13 +484,13 @@ _emoji_picker_impl :: proc(
 		if i == tone { bg = th.color.selection }
 		tone_cells[i] = col(
 			text(emoji_skin_swatches[i], th.color.fg, th.font.size_md),
-			width  = tone_w, height = 28,
+			width  = tone_w, height = tone_h,
 			bg     = bg,
 			radius = th.radius.sm,
 			main_align = .Center, cross_align = .Center,
 		)
 	}
-	tone_view := row(..tone_cells, spacing = 0, width = tone_strip_w, height = 28)
+	tone_view := row(..tone_cells, spacing = 0, width = tone_strip_w, height = tone_h)
 
 	page_label: string
 	if searching {
@@ -479,19 +499,33 @@ _emoji_picker_impl :: proc(
 		page_label = fmt.tprintf("%s — %d / %d", emoji_group_names[cat], page + 1, max_page + 1)
 	}
 	page_text := col(text(page_label, th.color.fg_muted, th.font.size_xs),
-		height = 18, main_align = .Center, cross_align = .Center)
-	footer_inner := col(
-		tone_view,
-		page_text,
-		spacing = 2,
-		main_align = .Center, cross_align = .Center,
-	)
-	footer := row(
-		prev_arrow,
-		flex(1, footer_inner),
-		next_arrow,
-		spacing = 0, width = footer_rect.w, height = footer_h, cross_align = .Center,
-	)
+		height = page_text_h, main_align = .Center, cross_align = .Center)
+	footer: View
+	if tones_apply {
+		tone_row := row(
+			prev_arrow,
+			flex(1, col(tone_view, height = tone_h, main_align = .Center, cross_align = .Center)),
+			next_arrow,
+			spacing = 0, width = footer_rect.w, height = tone_h, cross_align = .Center,
+		)
+		footer = col(
+			tone_row,
+			page_text,
+			spacing = tone_page_gap,
+			width  = footer_rect.w,
+			height = footer_h,
+			cross_align = .Stretch,
+		)
+	} else {
+		// No skin-tone-capable emojis in view — arrows flank the page label.
+		page_row := row(
+			prev_arrow,
+			flex(1, page_text),
+			next_arrow,
+			spacing = 0, width = footer_rect.w, height = footer_h, cross_align = .Center,
+		)
+		footer = page_row
+	}
 
 	// Stack the popover content.
 	stack: [dynamic]View
