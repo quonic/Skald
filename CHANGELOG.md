@@ -15,8 +15,11 @@ bug fixes bump the patch.
   `on_pick(emoji_string)`; people / hand emojis with a non-default
   tone selected get the modifier codepoint appended. Recents are
   app-owned (pass a `[]string`). Renders properly under runa
-  (`SKALD_RUNA=1`); under fontstash the cells hit-test fine but glyphs
-  tofu because fontstash doesn't decode COLR. See
+  (`SKALD_RUNA=1`); under fontstash the cells render blank because
+  Twemoji's `glyf` outlines are empty (only COLR layers ship), so
+  the widget prints a one-shot stderr warning the first time it runs
+  under fontstash. Both the warning and the fontstash code path go
+  away when runa becomes the default backend. See
   `examples/46_emoji_picker` + the cookbook recipe.
 
 ## 1.0.0-rc5 — 2026-05-14

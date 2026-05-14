@@ -812,9 +812,13 @@ storing on persistent state, same convention as any Msg-borne string.
 
 Backend: colour emoji renders properly only under runa
 (`SKALD_RUNA=1`). Under the default fontstash backend cells still
-hit-test, but glyphs fall through to `.notdef` tofu because
-fontstash doesn't decode COLR tables. Apps that adopt this widget
-typically pair it with `font_use_default_emoji(ctx.renderer)`.
+hit-test, but glyphs render **completely blank** — Twemoji-Mozilla
+ships COLR colour layers only; its `glyf` outlines are empty, so
+fontstash has nothing to draw. The widget prints a one-time stderr
+warning the first time it runs under fontstash so devs notice
+during testing. Apps that adopt this widget should set `SKALD_RUNA=1`
+at build time; the warning + fontstash fallback both disappear once
+runa becomes the default backend in the 1.x line.
 
 **Example: `examples/46_emoji_picker`.**
 

@@ -81,6 +81,13 @@ emoji_skin_swatches := [6]string{"✋", "✋🏻", "✋🏼", "✋🏽", "✋�
 @(private="file") EMOJI_TRIGGER_SIZE  :: f32(32)
 @(private="file") EMOJI_MAX_RECENTS   :: 8     // visible across the recents row
 
+// One-shot warning when the picker is built under fontstash. Twemoji-
+// Mozilla ships COLR layers only — its `glyf` outlines are empty — so
+// fontstash renders every emoji cell as a blank rect, which is
+// effectively unusable. Remove this whole gate once runa becomes the
+// default backend (1.x) — there's no longer a path that hits it.
+@(private="file") emoji_picker_warned_no_runa: bool
+
 @(private)
 _emoji_picker_impl :: proc(
 	ctx:      ^Ctx($Msg),
@@ -89,6 +96,11 @@ _emoji_picker_impl :: proc(
 	disabled: bool,
 ) -> (view: View, picked: string, ok: bool) {
 	th := ctx.theme
+
+	if !emoji_picker_warned_no_runa && ctx.renderer != nil && ctx.renderer.text.runa_state == nil {
+		fmt.eprintln("[skald] emoji_picker: running under fontstash — emoji cells will render blank. Build with SKALD_RUNA=1 for colour emoji.")
+		emoji_picker_warned_no_runa = true
+	}
 
 	id := widget_resolve_id(ctx, id)
 	if !disabled { widget_make_focusable(ctx, id) }
