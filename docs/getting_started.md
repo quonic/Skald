@@ -39,10 +39,11 @@ Skald ships with two text engines:
   one-time `stb_truetype.a` build above.
 - **runa** (opt-in preview): a pure-Odin text engine vendored at
   `skald/third_party/runa/`. Adds OpenType shaping (ligatures,
-  kerning), COLRv0 colour emoji, and is faster than fontstash. No
-  C dependency, so the `stb` step is skipped. Opt in via
-  `SKALD_RUNA=1 ./build.sh 07_counter run`. Becomes the default
-  in Skald 1.1.
+  kerning), COLRv0 + COLRv1 colour emoji (with linear / radial /
+  sweep gradients), and is faster than fontstash. No C dependency,
+  so the `stb` step is skipped. Opt in via
+  `SKALD_RUNA=1 ./build.sh 07_counter run`. Aiming to flip on by
+  default before Skald 1.0 final.
 
 A window opens with a − / Reset / + counter. Click the buttons, the
 number changes. If that works your toolchain is healthy and you can

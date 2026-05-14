@@ -45,8 +45,8 @@ Landing this takes three pieces:
    pure-Odin `runa` backend already does Latin/Cyrillic/Greek
    shaping (GSUB / GPOS) — Arabic + Indic + Thai shapers slot into
    `skald/third_party/runa/shape/` as new modules. The default
-   fontstash backend has no shaping path and won't get one; runa
-   becomes the default in 1.1.
+   fontstash backend has no shaping path and won't get one; runa is
+   set to become the default before 1.0 final.
 
 2. **The Unicode Bidirectional Algorithm.** So mixed-direction runs
    ("the word الكلمة here") reorder visually per Unicode Annex #9.

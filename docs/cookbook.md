@@ -806,8 +806,9 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 Under the runa backend (`SKALD_RUNA=1`) the emoji render in full
 COLRv0 colour via an RGBA atlas. Under the default fontstash
 backend they fall through to `.notdef` tofu — fontstash doesn't
-decode COLR / CBDT / sbix tables. Runa becomes the default in
-Skald 1.1; until then the helper is a no-op for fontstash users.
+decode COLR / CBDT / sbix tables. The plan is to flip runa on by
+default before Skald 1.0 final; until then the helper is a no-op
+for fontstash users.
 
 The bundled artwork is Twemoji, CC-BY-4.0. Apps shipping a Skald
 binary are redistributing it — add an attribution line in your

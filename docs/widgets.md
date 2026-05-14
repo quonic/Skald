@@ -1390,9 +1390,9 @@ frame from inside `view` (same pattern as the icon-font setup in
 Backend behaviour: under runa (`SKALD_RUNA=1`) the emoji render
 as full COLRv0 colour glyphs via an RGBA atlas. Under the default
 fontstash backend they fall through to `.notdef` tofu — fontstash
-doesn't decode COLR tables. Runa becomes the default in 1.1; until
-then the helper is effectively a no-op for fontstash users but
-calling it now means no code change at the flip.
+doesn't decode COLR tables. The plan is to flip runa on by default
+before 1.0 final; until then the helper is effectively a no-op for
+fontstash users but calling it now means no code change at the flip.
 
 Bundled artwork is Twemoji (CC-BY-4.0). Apps shipping a Skald
 binary are redistributing it — add an attribution line in your

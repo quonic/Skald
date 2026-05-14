@@ -9,10 +9,12 @@ bug fixes bump the patch.
 The headline of rc5 is a second text backend: Skald now vendors
 `runa`, a pure-Odin text engine, as an **opt-in** preview alongside
 `vendor:fontstash`. Set `SKALD_RUNA=1` at build time and every text
-call routes through it — OpenType shaping, COLRv0 colour emoji, and
-subpixel-x positioning land for free, and frame times improve on
-every benched workload. Fontstash stays the default for 1.0; runa
-becomes the default in 1.1 once it's been exercised in the wild.
+call routes through it — OpenType shaping, COLR colour emoji
+(v0 + v1 with gradients), and subpixel-x positioning land for free,
+and frame times improve on
+every benched workload. Fontstash stays the default for rc5; the
+plan is to flip runa on by default before 1.0 final if the rc soak
+turns up no surprises.
 
 Outside of runa, rc5 picks up `cmd_set_theme` for live theme reloads
 from `update`, eleven new `Key` enum variants for punctuation
@@ -26,17 +28,18 @@ shortcuts, and a `menu_bar` overlay fix.
   `skald/third_party/runa/`. Build with `SKALD_RUNA=1 ./build.sh …` (or
   `-define:SKALD_RUNA=true` directly) to route every `draw_text` /
   `measure_text` / `wrap_text` call through it instead of fontstash.
-  Default stays on fontstash for 1.0; the runa preview is for app
-  authors who want to try it before it becomes the default in 1.1.
+  Default stays on fontstash for rc5; the plan is to flip runa on by
+  default before 1.0 final if the rc soak turns up no surprises.
 
   What runa unlocks today:
   - **Real OpenType shaping** — ligatures (`fi`, `→`, `==`), GPOS pair
     kerning, contextual alternates. fontstash only has basic kern-pair
     lookup.
-  - **Colour emoji** — COLRv0 layered glyphs from fonts like
-    Twemoji-Mozilla. Register a colour-emoji font through the existing
-    `font_add_fallback` API and 🦊 renders properly in any text widget
-    (label, button, `text_input`, `rich_text`, chat bubbles).
+  - **Colour emoji** — COLRv0 layered glyphs and COLRv1 with linear /
+    radial / sweep gradients, from fonts like Twemoji-Mozilla or
+    Noto Color Emoji. Register a colour-emoji font through the
+    existing `font_add_fallback` API and 🦊 renders properly in any
+    text widget (label, button, `text_input`, `rich_text`, chat bubbles).
   - **Subpixel-x positioning** — glyphs land on the correct fractional
     pixel via a 4-bucket bitmap variant per cache key. fontstash
     quantises to integer pixels.
@@ -64,8 +67,8 @@ shortcuts, and a `menu_bar` overlay fix.
     Skald now bundles Twemoji-Mozilla (COLRv0, ~1.4 MB) at
     `skald/assets/Twemoji-Mozilla.ttf`. The helper loads it and
     chains as a fallback to Inter — under runa the emoji render in
-    full colour, under fontstash they still tofu (until 1.1 flips
-    runa default). Idempotent. Bundled artwork is CC-BY-4.0; apps
+    full colour, under fontstash they still tofu (until the runa
+    default flip). Idempotent. Bundled artwork is CC-BY-4.0; apps
     shipping Skald binaries add an attribution line per the notice
     at `skald/assets/Twemoji-Mozilla-CCBY.txt`.
 

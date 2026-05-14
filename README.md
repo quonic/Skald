@@ -24,10 +24,11 @@ actual numbers.
 > [`runa`](skald/third_party/runa/), a pure-Odin text engine, as an
 > opt-in second backend alongside `vendor:fontstash`. It brings real
 > OpenType shaping (ligatures, GPOS kerning, contextual alternates),
-> COLRv0 colour emoji, and subpixel-x positioning — and it's faster
-> than fontstash on every benched workload (gallery 2.2× faster).
-> Build with `SKALD_RUNA=1 ./build.sh …` to try it. Becomes the
-> default in Skald 1.1.
+> COLRv0 + COLRv1 colour emoji (with linear / radial / sweep
+> gradients), and subpixel-x positioning — and it's faster than
+> fontstash on every benched workload (gallery 2.2× faster). Build
+> with `SKALD_RUNA=1 ./build.sh …` to try it. Aiming to flip on by
+> default before Skald 1.0 final if the rc soak goes well.
 
 ## Highlights
 
@@ -44,9 +45,10 @@ actual numbers.
   (small, battle-tested, no shaping). The pure-Odin `runa` engine
   ships vendored at `skald/third_party/runa/` as a preview: opt in
   with `SKALD_RUNA=1 ./build.sh ...` to get OpenType shaping
-  (ligatures, GPOS kerning), COLRv0 colour emoji, and subpixel-x
-  positioning. Runa is faster than fontstash on every benched
-  workload (gallery 2.2× faster). It becomes the default in Skald 1.1.
+  (ligatures, GPOS kerning), COLRv0 + COLRv1 colour emoji (with
+  linear / radial / sweep gradients), and subpixel-x positioning.
+  Runa is faster than fontstash on every benched workload (gallery
+  2.2× faster). Aiming to flip on by default before 1.0 final.
 - **Async** — the `Command(Msg)` effect system runs file I/O, native
   dialogs, and delays through `core:nbio` on the main thread; completions
   round-trip back as regular `Msg` values. For sync libraries that aren't
@@ -256,7 +258,8 @@ Skald stands on good shoulders. Credit and thanks to:
 - **runa** (Lee Fry + contributors) — pure-Odin text engine vendored
   at [`skald/third_party/runa/`](skald/third_party/runa/). zlib
   licence. Opt-in alternative backend with full OpenType shaping +
-  colour emoji; becomes the default in Skald 1.1.
+  COLRv0 / COLRv1 colour emoji; aiming to flip on by default before
+  Skald 1.0 final.
 - **Vulkan** — specification by the Khronos Group; on macOS, Vulkan
   calls are translated to Metal by **[MoltenVK](https://github.com/KhronosGroup/MoltenVK)**
   (originally by Brenwill Workshop Ltd., now maintained under
