@@ -81,6 +81,30 @@ actual numbers.
   explicit ordering, global `shortcut()` registration.
 - **Cross-platform** — Linux (primary), Windows, macOS.
 
+## One C dependency
+
+Skald has one external C dependency: **SDL3**, for cross-platform
+windowing, input, clipboard, file dialogs, and HiDPI / multi-monitor
+handling. We use it via Odin's `vendor:sdl3` bindings — those are
+Odin procs that map to SDL3's C ABI, but the runtime that actually
+does the work is the C library (`libSDL3.so` / `SDL3.dll` /
+`libSDL3.dylib`), so a Skald binary links against and loads compiled
+C code at startup. `vendor:sdl3` is **bindings, not a re-implementation**.
+
+Everything else — Vulkan renderer, OpenType shaping (via the vendored
+pure-Odin `runa` engine), layout, widgets, atlas, theming, async — is
+pure Odin top-to-bottom.
+
+Why SDL3 specifically: cross-platform windowing and input is a vast
+edge-case surface (Wayland ↔ X11 transitions, IME, pen tablets,
+fractional scaling, multi-monitor refresh, macOS Spaces, Windows raw
+input, fullscreen modes, drag-and-drop) and SDL3 is the most
+battle-tested option that handles all of it. Rolling our own per-OS
+platform layer (X11+Wayland / Win32 / Cocoa) would be months of work
+and a long tail of edge cases to re-discover. A pure-Odin platform
+layer is on the table post-1.0 if uptake justifies the maintenance
+cost; for v1 the trade-off doesn't pay back.
+
 ## Quick start
 
 Prerequisites vary by platform. See [`PLATFORMS.md`](PLATFORMS.md) for
