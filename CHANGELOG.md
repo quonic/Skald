@@ -4,7 +4,29 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
-## 1.0.0-rc7 — 2026-05-17
+## Unreleased
+
+### Fixed
+
+- **Button (and other single-line widget) centring with fallback fonts
+  registered.** `measure_text` on the runa backend was returning the
+  maximum line height across *every* font in the fallback chain, so
+  apps that called `font_add_fallback` with a tall script font (Arabic,
+  Hebrew, CJK have notoriously large vertical metrics for diacritic
+  headroom) saw single-line widgets — buttons, checkboxes, radios,
+  toggles, single-line `text` — inflate their intrinsic height by
+  ~75 % even for Latin-only labels. Because `text_ascent` only uses
+  the primary font, the centring math `ty = (size.y − lh) / 2`
+  collapsed to `ty = pad.y` regardless of `lh`, leaving the text
+  flushed against the top padding with all the leftover space at the
+  bottom. `measure_text_runa` now reports the line height of the
+  primary font only, matching the fontstash backend and
+  `text_ascent_runa`. Apps that don't register fallbacks see no
+  change (line height was already 14 for Inter at `size_md`); apps
+  that do see button heights drop back to their pre-fallback values
+  and text re-centres.
+
+
 
 ### Changed
 

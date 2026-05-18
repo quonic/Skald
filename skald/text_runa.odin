@@ -378,14 +378,25 @@ measure_text_runa :: proc(
 	lines, err := runa.layout_paragraph(text, opts, &rs.cache, context.temp_allocator)
 	if err != .None { return }
 	w: f32 = 0
-	h: f32 = 0
 	for line in lines {
 		line_w: f32 = 0
 		for g in line.glyphs {
 			line_w += text_runa_glyph_advance(g.font, u16(g.glyph_id), g.x_advance)
 		}
 		if line_w > w { w = line_w }
-		if line.height > h { h = line.height }
+	}
+	// Per-line height from the **primary** font only, matching fontstash
+	// convention (and matching `text_ascent_runa`). Using runa's
+	// max-across-stack `line.height` here would inflate the result whenever
+	// a tall fallback font (Arabic, CJK, Hebrew) was registered via
+	// `font_add_fallback`, even for Latin-only text — that drifts widget
+	// heights and breaks single-line centering math (button, checkbox,
+	// radio, toggle, etc.).
+	fnt := rs.fonts[int(f)]
+	extent := fnt.ascent - fnt.descent
+	h: f32 = size * scale
+	if extent > 0 && fnt.units_per_em > 0 {
+		h = (fnt.ascent - fnt.descent + fnt.line_gap) * (size * scale) / extent
 	}
 	return w / scale, h / scale
 }
