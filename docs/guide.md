@@ -165,16 +165,25 @@ return skald.col(
             bg = th.color.primary, fg = th.color.on_primary),
         spacing = th.spacing.sm,
     ),
-    padding = th.spacing.lg,
+    padding     = th.spacing.lg,
+    cross_align = .Stretch,
 )
 ```
 
-Two new pieces:
+Three new pieces:
 
 - `row` lays its children out horizontally. `col` does vertical.
 - `flex(1, ...)` tells the row "this child takes all the leftover
   space." Without it the text input would shrink to fit its
   placeholder and there'd be a big gap before the button.
+- `cross_align = .Stretch` on the outer `col` makes the row claim
+  the col's full width. **This matters because `flex` needs a known
+  width to compute "leftover space" against** — without `.Stretch`,
+  the row's width is computed from its children, and `flex(1, ...)`
+  collapses to zero (text input becomes a thin vertical line). The
+  rule of thumb: any `col`/`row` that contains a `flex` child needs
+  either an explicit size or an ancestor pushing one through via
+  `cross_align = .Stretch`.
 
 Run it, type something, click Add. It should add to `items`, but
 we're not drawing the list yet.
@@ -203,8 +212,9 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
             spacing = th.spacing.sm,
         ),
         skald.col(..rows[:], spacing = th.spacing.xs),
-        padding = th.spacing.lg,
-        spacing = th.spacing.md,
+        padding     = th.spacing.lg,
+        spacing     = th.spacing.md,
+        cross_align = .Stretch,
     )
 }
 ```

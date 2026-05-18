@@ -2422,6 +2422,21 @@ clip :: proc(size: [2]f32, child: View) -> View {
 // `min_main` clamps the assigned main-axis size from below so the child
 // can't be squeezed past usability when the parent runs short. Defaults
 // to 0 (no floor — preserves v1 behaviour).
+//
+// IMPORTANT: flex only works when the parent stack has a KNOWN main-axis
+// size. "Known" means one of:
+//
+//   - an explicit `width =` (in a `row`) or `height =` (in a `col`)
+//   - the parent stretches to fill ITS parent's cross-axis, which
+//     means every ancestor up to the root must either set the size or
+//     pass `cross_align = .Stretch` to push it through
+//
+// In a `col` with default `cross_align = .Start`, the child `row`'s
+// width is computed FROM its children — so there is no "leftover
+// space" for flex to claim and flex collapses to zero. Symptom: a
+// text_input wrapped in `flex(1, ...)` renders as a thin vertical
+// line and won't accept input. Fix: add `cross_align = .Stretch` to
+// the outer `col`, or set an explicit `width` on the row.
 flex :: proc(weight: f32, child: View, min_main: f32 = 0) -> View {
 	c := new(View, context.temp_allocator)
 	c^ = child
