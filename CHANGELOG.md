@@ -6,6 +6,18 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Added
+
+- **`strike: bool` field on `Text_Span`.** Sibling to the existing
+  `underline` — set `strike = true` on any span in a `rich_text` view
+  to draw a strikethrough line through its glyphs. Strike position
+  sits at ~38 % of ascent above the baseline so the line runs through
+  the middle of capitals and the upper half of lowercase letters,
+  scaling with the span's font size. Strictly additive; spans that
+  leave `strike` at the zero default render identically to before.
+  Useful for diff "before"-side text, completed todo items, sale
+  prices, deprecation marks, and the like.
+
 ### Fixed
 
 - **Button (and other single-line widget) centring with fallback fonts

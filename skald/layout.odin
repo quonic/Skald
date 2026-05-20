@@ -402,6 +402,11 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 						Rect{x, baseline + UNDERLINE_OFF, seg.width, 1},
 						col, 0)
 				}
+				if sp.strike {
+					draw_rect(r,
+						Rect{x, baseline - ln.ascent * 0.38, seg.width, 1},
+						col, 0)
+				}
 				if len(sp.link) > 0 {
 					append(&link_rects, Link_Rect{
 						rect = Rect{x, y, seg.width, ln.height},

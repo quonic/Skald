@@ -222,6 +222,7 @@ Text_Span :: struct {
 	italic:    bool,
 	bg:        Color,
 	underline: bool,
+	strike:    bool,
 	link:      string,
 }
 
