@@ -6,6 +6,26 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Changed
+
+- **Vendored runa refreshed to 1.1.0 — Latin autohinter enabled by
+  default.** runa 1.1 ships a small Latin-script autohinter (~95 LOC)
+  that snaps glyph outlines to the pixel grid before rasterization
+  for clean stems and curve bottoms at body text sizes (12 – 30 px).
+  Fixes the long-standing fluffiness artifact at the bottom of round
+  letters (S, O, c, e, a, o) and along thin horizontal serifs that
+  was most visible in chat-style UIs reading at default size. The
+  upstream proc default flipped from opt-in to opt-out (`hint: bool
+  = true`), so Skald picks up the new behaviour just by refreshing
+  the vendor — no app-side code change required. Validated across
+  Inter (bundled), Liberation Sans / Liberation Serif / DejaVu Sans
+  Mono (system), at sizes 13 → 48 px, with descenders / punctuation /
+  diacritics / colour emoji / rich-text spans / wrapped paragraphs,
+  plus gallery sweep at body text sizes (13 / 14 px). Apps that
+  prefer the historical un-hinted look can opt back in by setting
+  `runa.raster_glyph`'s `hint` parameter to `false` from their own
+  text wrappers, but Skald itself uses the new default everywhere.
+
 ### Added
 
 - **Selectable text widgets — `text_selectable`, `rich_text_selectable`,
