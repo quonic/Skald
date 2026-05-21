@@ -4,7 +4,7 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
-## Unreleased
+## 1.0.0-rc8 — 2026-05-21
 
 ### Changed
 
@@ -81,7 +81,7 @@ bug fixes bump the patch.
   that do see button heights drop back to their pre-fallback values
   and text re-centres.
 
-
+## 1.0.0-rc7 — 2026-05-17
 
 ### Changed
 
