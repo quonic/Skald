@@ -4,6 +4,30 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
+## Unreleased
+
+### Added
+
+- **`widget_hovered(ctx, id)` — z-aware input-gating helper.** Sibling
+  of `rect_hovered`, used in click / press handlers where modal-trap
+  correctness matters. `rect_hovered`'s modal check is geometry-only:
+  it exempts any widget whose `last_rect` is geometrically contained
+  in the dialog card, on the assumption that contained widgets are
+  modal children. That assumption is wrong for widgets in the main
+  view tree whose rect happens to overlap the dialog card position
+  (chat-bubble images behind a settings dialog were the smoking gun)
+  — those widgets still received clicks through the scrim. The new
+  `widget_hovered(ctx, id)` checks the widget's actual render-layer
+  position via a new `last_overlay_frame` stamp on `Widget_State`,
+  set by `widget_record_rect` whenever the renderer is inside any
+  overlay subtree (dialog cards, popovers, menus). Widgets in the
+  main tree never stamp this, so they're correctly z-blocked when a
+  modal is open. `rect_hovered` is unchanged and remains the right
+  tool for purely visual hover effects (button tints, tooltip
+  triggers); apps writing custom click handlers should reach for
+  `widget_hovered`. No breaking changes — the new helper is additive,
+  built-in widgets keep their existing call sites for now.
+
 ## 1.0.0-rc8 — 2026-05-21
 
 ### Changed

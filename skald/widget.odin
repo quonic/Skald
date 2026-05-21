@@ -243,6 +243,20 @@ Widget_State :: struct {
 	press_pos:       [2]f32,
 	press_link_idx:  int,
 	link_fire_at_ns: i64,
+
+	// last_overlay_frame is the most recent frame on which this widget's
+	// `widget_record_rect` ran while the renderer was inside an overlay
+	// subtree (a dialog card, a popover, a menu, a tooltip — anything
+	// the layout pass queued into `r.overlays`). Stamped by
+	// `widget_record_rect` based on `Widget_Store.inside_overlay_depth`.
+	//
+	// Used by `widget_hovered` to gate input z-correctly: when a modal
+	// dialog is open, only widgets whose `last_overlay_frame` matches
+	// the previous frame can receive clicks. Widgets rendered in the
+	// main tree (behind the modal) won't have a matching stamp, so
+	// even if their `last_rect` happens to overlap the modal card
+	// geometrically, clicks through the scrim are blocked.
+	last_overlay_frame: u64,
 }
 
 // Link_Rect is one published-rect entry from rich_text: the
@@ -430,6 +444,16 @@ Widget_Store :: struct {
 	// uses (last_rect, modal_rect_prev, …).
 	overlay_rects:      [dynamic]Rect,
 	overlay_rects_prev: [dynamic]Rect,
+
+	// inside_overlay_depth is a push/pop counter the renderer maintains
+	// around every overlay subtree's child render — dialog cards, popovers,
+	// tooltips, menus. `widget_record_rect` consults this counter to mark
+	// each widget's `last_overlay_frame`, which `widget_hovered` uses to
+	// distinguish widgets rendered ON the overlay layer (modal children,
+	// popover items) from widgets rendered behind it in the main tree.
+	// Non-zero only during `render_overlays`; outside of that pass it's
+	// always 0.
+	inside_overlay_depth: int,
 
 	// scroll_rects tracks every scrollable container's viewport rect this
 	// frame, in render order (outer → inner). `scroll_rects_prev` is the
@@ -939,6 +963,14 @@ widget_stamp_overlay_rect :: proc(ws: ^Widget_Store, r: Rect) {
 widget_record_rect :: proc(ws: ^Widget_Store, id: Widget_ID, rect: Rect) {
 	st := ws.states[id]
 	st.last_rect = rect
+	// Stamp the overlay-frame marker so `widget_hovered` can tell which
+	// widgets are rendered ON an overlay layer vs which are behind one.
+	// `inside_overlay_depth` is non-zero only while `render_overlays` is
+	// rendering an overlay subtree, so widgets in the main tree leave
+	// `last_overlay_frame` at its old value.
+	if ws.inside_overlay_depth > 0 {
+		st.last_overlay_frame = ws.frame
+	}
 	ws.states[id] = st
 }
 
@@ -997,6 +1029,72 @@ rect_hovered :: proc(ctx: ^Ctx($Msg), rect: Rect) -> bool {
 	}
 	for rr in ctx.widgets.overlay_rects_prev {
 		if rect_contains_point(rr, mp) && !rect_contains_rect(rr, rect) {
+			return false
+		}
+	}
+	return true
+}
+
+// widget_hovered is the input-gating sibling of `rect_hovered`. Where
+// `rect_hovered(ctx, rect)` answers a *visual* question — "is the mouse
+// over this rectangle (give or take popover bleed-through)?" —
+// `widget_hovered(ctx, id)` answers an *input-routing* question — "is
+// this widget eligible to receive a click or hover effect this frame?"
+//
+// The distinction matters because rectangles alone can't tell whether
+// a widget sits in front of or behind a modal dialog. `rect_hovered`'s
+// modal trap exempts any rect that's geometrically contained in the
+// modal card, on the assumption that contained widgets are modal
+// children. That assumption is wrong for widgets in the main view tree
+// whose `last_rect` happens to overlap the dialog card position; those
+// widgets still receive clicks through the scrim. `widget_hovered`
+// checks `last_overlay_frame` instead — only widgets whose
+// `widget_record_rect` ran while the renderer was inside an overlay
+// subtree (modal card or popover) match, so anything in the main tree
+// is correctly z-blocked.
+//
+// Use this in every widget builder that gates click / press behaviour:
+//
+//     id := widget_resolve_id(ctx, id)
+//     st := widget_get(ctx, id, .Click_Zone)
+//     if widget_hovered(ctx, id) {
+//         // safe to react to mouse_pressed / mouse_released etc.
+//     }
+//
+// `rect_hovered` is still the right tool for purely visual hover state
+// (button bg tints, tooltip triggers) where z-correctness isn't
+// load-bearing — its rect-only API is simpler to call and works at
+// view-build time without needing the widget id to be registered yet.
+//
+// Returns false if `id` has no recorded `last_rect` yet (first frame
+// for this widget, or stale eviction), so it's safe to call before
+// `widget_record_rect` has run for the current frame — you simply get
+// `false` until the widget gets its first render-time rect.
+widget_hovered :: proc(ctx: ^Ctx($Msg), id: Widget_ID) -> bool {
+	st, ok := ctx.widgets.states[id]
+	if !ok { return false }
+	if !rect_contains_point(st.last_rect, ctx.input.mouse_pos) { return false }
+
+	// Modal trap: when a modal dialog was open last frame, only widgets
+	// whose `widget_record_rect` ran while the renderer was inside an
+	// overlay subtree are eligible. That set includes the dialog's own
+	// content widgets AND any popovers spawned from the dialog (select
+	// dropdowns, pickers, menus) — both render through `render_overlays`,
+	// which brackets the depth counter. Widgets in the main view tree
+	// don't stamp `last_overlay_frame` at all, so they're z-blocked even
+	// if their `last_rect` happens to overlap the modal card position.
+	mr := ctx.widgets.modal_rect_prev
+	if mr.w > 0 && mr.h > 0 {
+		prev_frame := ctx.widgets.frame - 1
+		if st.last_overlay_frame != prev_frame { return false }
+	}
+
+	// Same popover-bleed gate `rect_hovered` applies: if the mouse is
+	// over an overlay rect that doesn't fully contain this widget, the
+	// overlay is in front, suppress hover.
+	for rr in ctx.widgets.overlay_rects_prev {
+		if rect_contains_point(rr, ctx.input.mouse_pos) &&
+		   !rect_contains_rect(rr, st.last_rect) {
 			return false
 		}
 	}

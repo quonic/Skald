@@ -1665,7 +1665,15 @@ render_overlays :: proc(r: ^Renderer) {
 				{0, 4},                      // offset: light from above
 			)
 		}
+		// Bracket the overlay subtree render so `widget_record_rect` stamps
+		// `last_overlay_frame` on every widget that renders inside this
+		// overlay. `widget_hovered` reads that stamp to gate input
+		// z-correctly — without it, widgets in the main tree whose rect
+		// happens to overlap an open modal card would still receive clicks
+		// through the scrim.
+		if r.widgets != nil { r.widgets.inside_overlay_depth += 1 }
 		render_view(r, e.child, e.origin, e.size)
+		if r.widgets != nil { r.widgets.inside_overlay_depth -= 1 }
 
 		r.alpha_multiplier = saved_alpha
 		i += 1
