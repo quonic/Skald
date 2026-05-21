@@ -95,6 +95,12 @@ Widget_Kind :: enum u8 {
 	// strings. The builder (rich_text_links) reads them next frame
 	// for hover-cursor + click dispatch.
 	Rich_Text,
+	// Text marks a selectable `text` widget's state slot. Reuses the
+	// `cursor_pos` / `selection_anchor` / `mouse_selecting` fields the
+	// same way text_input does — selection is just a range over the
+	// underlying byte string. No editing path, no buffer, just
+	// click/drag/copy.
+	Text,
 }
 
 // Widget_State is the per-widget scratch record the framework stashes
@@ -210,6 +216,33 @@ Widget_State :: struct {
 	// also persistent (cloned on stamp, freed on cleanup). Nil when no
 	// rich_text with link spans has rendered into this id.
 	link_rects: ^[dynamic]Link_Rect,
+
+	// press_pos / press_link_idx implement press-vs-drag detection for
+	// selectable rich text with clickable links. On a single press over
+	// a link span, the widget enters "pending link" mode: `press_pos`
+	// records the mouse pixel position, `press_link_idx` records the
+	// span index of the link. If the mouse moves more than a small
+	// threshold before release, the press converts to a drag-selection
+	// starting at the press byte. If the mouse releases without crossing
+	// the threshold, a deferred-fire timer begins (`link_fire_at_ns`):
+	// the link callback fires when that time elapses, *unless* a second
+	// press arrives first (count >= 2 turns the streak into a double /
+	// triple click which overrides the single-click action).
+	//
+	// Sentinel: `press_link_idx == -1` means "no pending link"; the
+	// widget builder resets to -1 on focus loss and on presses that
+	// don't land on a link span. Default zero would alias to span 0,
+	// so widgets that use this field must explicitly initialise it
+	// (rich_text_selectable does this in its !focused / non-link
+	// branches).
+	//
+	// `link_fire_at_ns` is the absolute monotonic-clock deadline (in
+	// nanoseconds) at which the deferred link fire should happen.
+	// Zero means "no pending fire". Cleared when a multi-click cancels
+	// the single-click intent.
+	press_pos:       [2]f32,
+	press_link_idx:  int,
+	link_fire_at_ns: i64,
 }
 
 // Link_Rect is one published-rect entry from rich_text: the

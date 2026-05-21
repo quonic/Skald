@@ -281,6 +281,57 @@ skald.text_input(ctx, s.filter, on_filter_changed,
     width         = 240)
 ```
 
+### Selectable chat-style message bubble
+
+Chat apps need the message body to be **copyable** (so the user can
+grab a URL, snippet, or quote out of it) **and** to support
+**clickable links** in the body. `rich_text_selectable_links` is the
+one-stop widget for this:
+
+```odin
+message_bubble :: proc(ctx: ^skald.Ctx(Msg), m: Message) -> skald.View {
+    th := ctx.theme
+
+    body := skald.rich_text_selectable_links(ctx,
+        []skald.Text_Span{
+            {str = m.intro,    color = th.color.fg, size = th.font.size_md},
+            {str = m.url,      color = th.color.primary, size = th.font.size_md,
+             underline = true, link = m.url},
+            {str = m.outro,    color = th.color.fg, size = th.font.size_md},
+        },
+        base          = th.color.fg,
+        on_link_click = on_link_click,
+        size          = th.font.size_md,
+        max_width     = 440,
+    )
+
+    return skald.col(
+        body,
+        skald.text(format_ts(m.timestamp), th.color.fg_muted, th.font.size_xs),
+        padding = th.spacing.md,
+        bg      = th.color.elevated,
+        radius  = th.radius.md,
+        spacing = th.spacing.xs,
+    )
+}
+
+on_link_click :: proc(target: string) -> Msg { return Open_Url(target) }
+```
+
+The user gets the chat-app gestures they already expect:
+- click + drag → select a substring of the message
+- double-click → select the word under the cursor (Unicode word boundaries)
+- triple-click → select the whole bubble
+- `Ctrl-C` → plain text on the clipboard (no markup leaks)
+- quick tap on a link → `Open_Url(target)` fires after ~350 ms (the
+  multi-click resolution window — long enough that a double-click
+  cancels it and selects the link's word instead)
+- press + drag on a link → starts selection, link doesn't fire
+
+`rich_text_selectable` (without `_links`) is the same widget minus the
+link-click handling — use that if your bubbles never contain clickable
+content.
+
 ---
 
 ## Lists and tables

@@ -340,11 +340,37 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 		// draw_text takes a baseline y — offset by ascent so the view's
 		// top edge aligns with `origin.y`, matching what view_size reports.
 		ascent := text_ascent(r, vv.size, vv.font)
+		if r.widgets != nil && vv.selectable && vv.id != 0 {
+			widget_record_rect(r.widgets, vv.id,
+				Rect{origin.x, origin.y, size.x, size.y})
+		}
+		has_sel := vv.selectable && vv.sel_start != vv.sel_end
+		sel_lo := vv.sel_start if vv.sel_start <= vv.sel_end else vv.sel_end
+		sel_hi := vv.sel_end   if vv.sel_end   >= vv.sel_start else vv.sel_start
+
+		// Helper closure equivalent: draws selection rect for one rendered
+		// line if the line's byte range overlaps [sel_lo, sel_hi).
+		// Inlined per branch below because Odin closures aren't a thing.
+
 		if vv.max_width > 0 {
 			lines := wrap_text(r, vv.str, vv.max_width, vv.size, vv.font)
 			_, lh := measure_text(r, "", vv.size, vv.font)
 			y := origin.y
 			for line in lines {
+				if has_sel {
+					line_off := text_line_byte_offset(vv.str, line)
+					if line_off >= 0 {
+						line_end := line_off + len(line)
+						if sel_lo < line_end && sel_hi > line_off {
+							lo_in := max(sel_lo, line_off) - line_off
+							hi_in := min(sel_hi, line_end) - line_off
+							x0: f32 = 0
+							if lo_in > 0 { x0, _ = measure_text(r, line[:lo_in], vv.size, vv.font) }
+							x1, _ := measure_text(r, line[:hi_in], vv.size, vv.font)
+							draw_rect(r, Rect{origin.x + x0, y, x1 - x0, lh}, vv.color_selection, 0)
+						}
+					}
+				}
 				draw_text(r, line, origin.x, y + ascent, vv.color, vv.size, vv.font)
 				y += lh
 			}
@@ -353,10 +379,31 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			_, lh := measure_text(r, "", vv.size, vv.font)
 			y := origin.y
 			for line in lines {
+				if has_sel {
+					line_off := text_line_byte_offset(vv.str, line)
+					if line_off >= 0 {
+						line_end := line_off + len(line)
+						if sel_lo < line_end && sel_hi > line_off {
+							lo_in := max(sel_lo, line_off) - line_off
+							hi_in := min(sel_hi, line_end) - line_off
+							x0: f32 = 0
+							if lo_in > 0 { x0, _ = measure_text(r, line[:lo_in], vv.size, vv.font) }
+							x1, _ := measure_text(r, line[:hi_in], vv.size, vv.font)
+							draw_rect(r, Rect{origin.x + x0, y, x1 - x0, lh}, vv.color_selection, 0)
+						}
+					}
+				}
 				draw_text(r, expand_tabs(line), origin.x, y + ascent, vv.color, vv.size, vv.font)
 				y += lh
 			}
 		} else {
+			if has_sel {
+				_, lh := measure_text(r, "", vv.size, vv.font)
+				x0: f32 = 0
+				if sel_lo > 0 { x0, _ = measure_text(r, vv.str[:sel_lo], vv.size, vv.font) }
+				x1, _ := measure_text(r, vv.str[:sel_hi], vv.size, vv.font)
+				draw_rect(r, Rect{origin.x + x0, origin.y, x1 - x0, lh}, vv.color_selection, 0)
+			}
 			draw_text(r, expand_tabs(vv.str), origin.x, origin.y + ascent, vv.color, vv.size, vv.font)
 		}
 
@@ -380,6 +427,14 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 		// next frame's builder can hover/click against it.
 		link_rects: [dynamic]Link_Rect
 		link_rects.allocator = context.temp_allocator
+		// Selection state — only meaningful when selectable=true.
+		has_sel := vv.selectable && vv.sel_start != vv.sel_end
+		sel_lo  := vv.sel_start if vv.sel_start <= vv.sel_end else vv.sel_end
+		sel_hi  := vv.sel_end   if vv.sel_end   >= vv.sel_start else vv.sel_start
+		if r.widgets != nil && vv.selectable && vv.id != 0 {
+			widget_record_rect(r.widgets, vv.id,
+				Rect{origin.x, origin.y, size.x, size.y})
+		}
 		y := origin.y
 		for ln in vv.lines {
 			baseline := y + ln.ascent
@@ -392,6 +447,27 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 				if sp.bg.a > 0 {
 					chip := Rect{x - BG_PAD_X, y - BG_PAD_Y, seg.width + 2*BG_PAD_X, ln.height + 2*BG_PAD_Y}
 					draw_rect(r, chip, sp.bg, BG_RADIUS)
+				}
+				// Selection highlight — drawn before the glyphs so they
+				// sit on top. Per-segment because each segment has its
+				// own font/size and contributes a separate rect (selection
+				// may cross multiple segments / spans on the same line).
+				if has_sel {
+					abs_start := rich_seg_absolute_start(vv.spans, seg)
+					seg_len   := seg.byte_end - seg.byte_start
+					abs_end   := abs_start + seg_len
+					if sel_lo < abs_end && sel_hi > abs_start {
+						lo_in_seg := max(sel_lo, abs_start) - abs_start
+						hi_in_seg := min(sel_hi, abs_end)   - abs_start
+						x_lo: f32 = 0
+						if lo_in_seg > 0 {
+							x_lo, _ = measure_text(r, sp.str[seg.byte_start:seg.byte_start + lo_in_seg], sz, fnt)
+						}
+						x_hi, _ := measure_text(r, sp.str[seg.byte_start:seg.byte_start + hi_in_seg], sz, fnt)
+						draw_rect(r,
+							Rect{x + x_lo, y, x_hi - x_lo, ln.height},
+							vv.color_selection, 0)
+					}
 				}
 				if seg.byte_end > seg.byte_start && seg.byte_end <= len(sp.str) {
 					sub := sp.str[seg.byte_start:seg.byte_end]

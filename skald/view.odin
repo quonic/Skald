@@ -180,6 +180,16 @@ View_Text :: struct {
 	size:      f32,
 	font:      Font,
 	max_width: f32,
+
+	// Selectable mode (opt-in via the `text` proc group's interactive
+	// form; zero-valued for the static form so existing call sites
+	// behave identically).
+	id:              Widget_ID,
+	selectable:      bool,
+	sel_start:       int,
+	sel_end:         int,
+	focused:         bool,
+	color_selection: Color,
 }
 
 // Text_Weight names the typographic weight of a Text_Span. Two values
@@ -239,6 +249,16 @@ View_Rich_Text :: struct {
 	font:      Font,
 	max_width: f32,
 	id:        Widget_ID,
+
+	// Selectable mode (opt-in via `rich_text_selectable`; zero-valued for
+	// the static `rich_text` so existing call sites behave identically).
+	// sel_start / sel_end are absolute byte offsets into the concatenation
+	// of all spans' `str` fields, taken in document order.
+	selectable:      bool,
+	sel_start:       int,
+	sel_end:         int,
+	focused:         bool,
+	color_selection: Color,
 }
 
 // View_Stack lays children out in a row or column. Children contribute
@@ -881,6 +901,256 @@ text :: proc(
 	}
 }
 
+// text_selectable is `text`'s input-aware sibling: same render shape,
+// but registers a Widget_ID, becomes focusable, and handles mouse
+// press / drag range selection plus keyboard shortcuts:
+//   - Ctrl/Cmd-A : select all
+//   - Ctrl/Cmd-C : copy selection to system clipboard
+//   - Click outside the widget clears the selection via focus loss.
+//
+// Use this when the rendered text needs to be copyable: chat / message
+// bubbles, code blocks, log lines, status messages, etc. For inert
+// labels and chrome text, prefer plain `text` — it's lighter (no
+// Widget_ID, no per-frame state machinery, no focus participation).
+//
+// Future extensions planned but not yet wired here:
+//   - Double-click word selection
+//   - Triple-click select-all
+//   - Right-click "Copy" context menu
+text_selectable :: proc(
+	ctx:        ^Ctx($Msg),
+	str:        string,
+	color:      Color,
+	size:       f32  = 14,
+	font:       Font = 0,
+	max_width:  f32  = 0,
+	id:         Widget_ID = 0,
+) -> View {
+	wid := widget_resolve_id(ctx, id)
+	widget_make_focusable(ctx, wid)
+	st := widget_get(ctx, wid, .Text)
+	focused := widget_has_focus(ctx, wid)
+
+	// Clear selection when focus leaves the widget. Without this every
+	// click on a new selectable would leave the previous widget's
+	// selection visible — selections would pile up across the view.
+	if !focused {
+		st.cursor_pos       = 0
+		st.selection_anchor = 0
+		st.mouse_selecting  = false
+	}
+
+	// Clamp persisted byte offsets in case the str shrunk underneath us
+	// (caller swapped to a shorter message).
+	n := len(str)
+	if st.cursor_pos       > n { st.cursor_pos       = n }
+	if st.selection_anchor > n { st.selection_anchor = n }
+
+	hovered := rect_hovered(ctx, st.last_rect)
+
+	// Mouse press inside our rect → start selection at click position.
+	// Click streak (1/2/3+) drives the action: single = caret, double =
+	// select word (UAX #29 boundaries via runa.word_iter), triple+ =
+	// select all. SDL reports the streak directly through `mouse_click_count`.
+	if hovered && ctx.input.mouse_pressed[.Left] {
+		byte_pos := text_hit_test(ctx.renderer, str, size, font, max_width,
+			st.last_rect, ctx.input.mouse_pos)
+		clicks := ctx.input.mouse_click_count[.Left]
+		switch {
+		case clicks >= 3:
+			// Triple-click: select everything.
+			st.selection_anchor = 0
+			st.cursor_pos       = n
+			st.mouse_selecting  = false
+		case clicks == 2:
+			// Double-click: select the word containing the click position.
+			w_lo, w_hi := text_word_range(str, byte_pos)
+			st.selection_anchor = w_lo
+			st.cursor_pos       = w_hi
+			st.mouse_selecting  = false
+		case:
+			// Single click: place caret; arm drag-to-extend selection.
+			st.cursor_pos       = byte_pos
+			st.selection_anchor = byte_pos
+			st.mouse_selecting  = true
+		}
+		widget_focus(ctx, wid)
+		focused = true
+	}
+
+	// Drag while mouse is held → extend selection. We re-hit-test
+	// against the current mouse position so the user can drag outside
+	// the rect (selection extends to the nearest visible byte).
+	if st.mouse_selecting && ctx.input.mouse_buttons[.Left] {
+		byte_pos := text_hit_test(ctx.renderer, str, size, font, max_width,
+			st.last_rect, ctx.input.mouse_pos)
+		st.cursor_pos = byte_pos
+	}
+
+	if !ctx.input.mouse_buttons[.Left] {
+		st.mouse_selecting = false
+	}
+
+	// Keyboard shortcuts (focus-gated).
+	if focused {
+		mods := ctx.input.modifiers
+		ctrl := (.Ctrl in mods) || (.Super in mods)
+		if ctrl && .A in ctx.input.keys_pressed {
+			st.selection_anchor = 0
+			st.cursor_pos       = n
+		}
+		if ctrl && .C in ctx.input.keys_pressed {
+			lo, hi := text_sel_range(st)
+			if lo != hi {
+				_ = clipboard_set(str[lo:hi])
+			}
+		}
+	}
+
+	widget_set(ctx, wid, st)
+
+	lo, hi := text_sel_range(st)
+	return View_Text{
+		str             = str,
+		color           = color,
+		size            = size,
+		font            = font,
+		max_width       = max_width,
+		id              = wid,
+		selectable      = true,
+		sel_start       = lo,
+		sel_end         = hi,
+		focused         = focused,
+		color_selection = ctx.theme.color.selection,
+	}
+}
+
+// text_sel_range returns the [lo, hi) byte range from a Widget_State's
+// cursor + anchor. Empty range means no selection.
+@(private)
+text_sel_range :: proc(st: Widget_State) -> (lo, hi: int) {
+	if st.selection_anchor <= st.cursor_pos {
+		return st.selection_anchor, st.cursor_pos
+	}
+	return st.cursor_pos, st.selection_anchor
+}
+
+// text_hit_test maps a logical-pixel mouse position inside a text
+// widget's rect to a byte index in the original string. Mirrors the
+// render path's wrap + line layout so click positions agree with what
+// the user sees. Out-of-bounds clicks clamp to the nearest valid
+// byte (clicks above → byte 0; below → len; left of line → start of
+// line; right of line → end of line).
+@(private)
+text_hit_test :: proc(r: ^Renderer, str: string, size: f32, font: Font, max_width: f32,
+                      rect: Rect, mp: [2]f32) -> int {
+	if len(str) == 0 do return 0
+	mx := mp.x - rect.x
+	my := mp.y - rect.y
+	_, lh := measure_text(r, "", size, font)
+	if lh <= 0 do lh = size
+
+	// Single-line case: no wrap, no newlines.
+	if max_width <= 0 && !strings.contains_any(str, "\n\r") {
+		if mx <= 0 do return 0
+		return byte_index_at_x(r, str, size, font, mx)
+	}
+
+	// Multi-line: either via wrap or explicit newlines. We walk the
+	// rendered lines and find which one the y position lands on.
+	lines: []string
+	if max_width > 0 {
+		lines = wrap_text(r, str, max_width, size, font)
+	} else {
+		lines = split_lines(str)
+	}
+	if len(lines) == 0 do return 0
+
+	line_idx := int(my / lh)
+	if line_idx < 0 do line_idx = 0
+	if line_idx >= len(lines) do line_idx = len(lines) - 1
+
+	target := lines[line_idx]
+	// Compute byte offset of this line within `str` by pointer arithmetic.
+	// wrap_text / split_lines emit substrings that point into the original
+	// buffer (or an expanded copy when tabs were present — tabs are an
+	// edge case we accept imperfect mapping on; chat / prose text doesn't
+	// hit it).
+	line_off := text_line_byte_offset(str, target)
+	if line_off < 0 do line_off = 0
+
+	if mx <= 0 do return line_off
+	col_in_line := byte_index_at_x(r, target, size, font, mx)
+	return line_off + col_in_line
+}
+
+// text_line_byte_offset finds where `line` sits within `str` by
+// pointer arithmetic on the underlying byte buffer. Returns -1 if the
+// substring isn't pointing into the original buffer (rare — happens
+// only when wrap_text had to allocate due to tab expansion).
+@(private)
+text_line_byte_offset :: proc(str, line: string) -> int {
+	s := raw_data(str)
+	l := raw_data(line)
+	delta := int(uintptr(l) - uintptr(s))
+	if delta < 0 || delta > len(str) { return -1 }
+	return delta
+}
+
+// text_word_range returns the [lo, hi) byte range of the word containing
+// `byte_pos` in `str`, using runa's UAX #29 word segmentation. Backend-
+// agnostic: runa is always linked into Skald, so this works the same on
+// runa and fontstash builds.
+//
+// Click positions outside any word (whitespace, punctuation, or past
+// end-of-text) return an empty range at the click — selection stays at
+// caret instead of grabbing whitespace.
+@(private)
+text_word_range :: proc(str: string, byte_pos: int) -> (lo, hi: int) {
+	if len(str) == 0 { return 0, 0 }
+	pos := byte_pos
+	if pos < 0          { pos = 0 }
+	if pos > len(str)   { pos = len(str) }
+
+	it := grapheme.word_iter_make(str)
+	for {
+		w_lo, w_hi, ok := grapheme.word_iter_next(&it)
+		if !ok { break }
+		// Word body match: pos inside [w_lo, w_hi).
+		if pos >= w_lo && pos < w_hi {
+			// Filter out "degenerate" runs of whitespace / punctuation
+			// that UAX #29 still reports as a word. If the run starts
+			// with a non-letter / non-digit, it's a separator run —
+			// don't select it on double-click.
+			r := str[w_lo]
+			if r > 0x20 && r != ' ' && r != '\t' && !is_word_separator_byte(r) {
+				return w_lo, w_hi
+			}
+			break
+		}
+	}
+	return pos, pos
+}
+
+// is_word_separator_byte returns true for ASCII punctuation that
+// UAX #29 might lump into a "word" run but which we don't want to
+// select on double-click. Only checks ASCII bytes — Unicode-script
+// punctuation is rare enough that the UAX #29 segmenter handles it
+// reasonably without our intervention.
+@(private)
+is_word_separator_byte :: proc(b: byte) -> bool {
+	switch b {
+	case '.', ',', ';', ':', '!', '?',
+	     '(', ')', '[', ']', '{', '}',
+	     '"', '\'', '`',
+	     '/', '\\', '|',
+	     '<', '>', '=',
+	     '+', '-', '*', '&', '%', '#', '@', '~', '^':
+		return true
+	}
+	return false
+}
+
 // rich_text lays out a paragraph of styled spans. Each span carries its
 // own colour, weight, italic flag, optional inline background, and
 // optional underline; the runs flow in document order and word-wrap as
@@ -935,6 +1205,450 @@ rich_text :: proc(
 		max_width = max_width,
 		id        = rid,
 	}
+}
+
+// rich_text_selectable is `rich_text`'s input-aware sibling. Same span
+// composition + wrap behaviour, plus mouse-drag range selection,
+// double-click word selection (UAX #29 via runa), triple-click
+// select-all, and Ctrl/Cmd-A / Ctrl/Cmd-C keyboard shortcuts.
+//
+// Selection ranges are absolute byte offsets into the concatenation of
+// `spans[*].str` in document order. Ctrl+C copies that concatenated
+// substring to the system clipboard, stripping span boundaries — the
+// user gets back plain text, not the markup that produced it.
+//
+// Use for chat / message bubbles or any other rendered prose where the
+// user expects to be able to copy text out. For inert formatted text
+// (chrome, tooltips, demo labels), prefer plain `rich_text` — it's
+// lighter (no Widget_ID for selection state, no focus participation).
+rich_text_selectable :: proc(
+	ctx:           ^Ctx($Msg),
+	spans:         []Text_Span,
+	base:          Color,
+	size:          f32 = 14,
+	font:          Font = 0,
+	max_width:     f32 = 0,
+	id:            Widget_ID = 0,
+) -> View {
+	wid := widget_resolve_id(ctx, id)
+	widget_make_focusable(ctx, wid)
+	st := widget_get(ctx, wid, .Rich_Text)
+	focused := widget_has_focus(ctx, wid)
+
+	if !focused {
+		st.cursor_pos       = 0
+		st.selection_anchor = 0
+		st.mouse_selecting  = false
+	}
+
+	// Total byte length of the concatenated span content.
+	total_len := 0
+	for sp in spans { total_len += len(sp.str) }
+	if st.cursor_pos       > total_len { st.cursor_pos       = total_len }
+	if st.selection_anchor > total_len { st.selection_anchor = total_len }
+
+	// Mirror `rich_text`'s span copy + wrap so layout reads from a stable
+	// frame-arena slice and we share the same Rich_Lines for hit-test +
+	// render.
+	copied := make([]Text_Span, len(spans), context.temp_allocator)
+	copy(copied, spans)
+	resolved_size := size if size > 0 else 14
+	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
+
+	hovered := rect_hovered(ctx, st.last_rect)
+
+	if hovered && ctx.input.mouse_pressed[.Left] {
+		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
+			st.last_rect, ctx.input.mouse_pos)
+		clicks := ctx.input.mouse_click_count[.Left]
+		switch {
+		case clicks >= 3:
+			st.selection_anchor = 0
+			st.cursor_pos       = total_len
+			st.mouse_selecting  = false
+		case clicks == 2:
+			full := concat_spans(copied, context.temp_allocator)
+			w_lo, w_hi := text_word_range(full, byte_pos)
+			st.selection_anchor = w_lo
+			st.cursor_pos       = w_hi
+			st.mouse_selecting  = false
+		case:
+			st.cursor_pos       = byte_pos
+			st.selection_anchor = byte_pos
+			st.mouse_selecting  = true
+		}
+		widget_focus(ctx, wid)
+		focused = true
+	}
+
+	if st.mouse_selecting && ctx.input.mouse_buttons[.Left] {
+		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
+			st.last_rect, ctx.input.mouse_pos)
+		st.cursor_pos = byte_pos
+	}
+
+	if !ctx.input.mouse_buttons[.Left] {
+		st.mouse_selecting = false
+	}
+
+	if focused {
+		mods := ctx.input.modifiers
+		ctrl := (.Ctrl in mods) || (.Super in mods)
+		if ctrl && .A in ctx.input.keys_pressed {
+			st.selection_anchor = 0
+			st.cursor_pos       = total_len
+		}
+		if ctrl && .C in ctx.input.keys_pressed {
+			lo, hi := text_sel_range(st)
+			if lo != hi {
+				out := concat_spans_range(copied, lo, hi, context.temp_allocator)
+				_ = clipboard_set(out)
+			}
+		}
+	}
+
+	widget_set(ctx, wid, st)
+
+	lo, hi := text_sel_range(st)
+	return View_Rich_Text{
+		spans           = copied,
+		lines           = lines,
+		base            = base,
+		size            = size,
+		font            = font,
+		max_width       = max_width,
+		id              = wid,
+		selectable      = true,
+		sel_start       = lo,
+		sel_end         = hi,
+		focused         = focused,
+		color_selection = ctx.theme.color.selection,
+	}
+}
+
+// rich_text_selectable_links combines `rich_text_selectable`'s mouse +
+// keyboard range-selection behaviour with `rich_text_links`'s clickable
+// link spans. A quick press-and-release on a link span fires
+// `on_link_click(span.link)` like a normal link; a press-then-drag past
+// a small threshold starts a drag-selection instead of clicking the
+// link. Double-click selects the word (UAX #29); triple-click selects
+// the whole widget; Ctrl/Cmd-A and Ctrl/Cmd-C work the same as the
+// non-link selectable variant.
+//
+// `on_link_click` is required (no `= nil` default) because Odin can't
+// monomorphize a polymorphic-return proc default — see
+// `feedback_no_optional_polymorphic_default` in skald's design notes.
+// Apps that want a no-op should pass a callback that emits a Msg the
+// app handles as a no-op in `update`.
+//
+// Use this for chat / messenger bubbles whose content mixes prose with
+// URLs / mentions that users expect to be tappable.
+rich_text_selectable_links :: proc(
+	ctx:           ^Ctx($Msg),
+	spans:         []Text_Span,
+	base:          Color,
+	on_link_click: proc(target: string) -> Msg,
+	size:          f32 = 14,
+	font:          Font = 0,
+	max_width:     f32 = 0,
+	id:            Widget_ID = 0,
+) -> View {
+	wid := widget_resolve_id(ctx, id)
+	widget_make_focusable(ctx, wid)
+	st := widget_get(ctx, wid, .Rich_Text)
+	focused := widget_has_focus(ctx, wid)
+
+	if !focused {
+		st.cursor_pos       = 0
+		st.selection_anchor = 0
+		st.mouse_selecting  = false
+		st.press_link_idx   = -1
+		st.link_fire_at_ns  = 0
+	}
+
+	total_len := 0
+	for sp in spans { total_len += len(sp.str) }
+	if st.cursor_pos       > total_len { st.cursor_pos       = total_len }
+	if st.selection_anchor > total_len { st.selection_anchor = total_len }
+
+	copied := make([]Text_Span, len(spans), context.temp_allocator)
+	copy(copied, spans)
+	resolved_size := size if size > 0 else 14
+	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
+
+	hovered := rect_hovered(ctx, st.last_rect)
+
+	// Drag threshold for press-vs-drag-vs-link detection. Manhattan
+	// distance — well below where a deliberate drag-to-select would
+	// start, far enough that an intentional tap doesn't fail.
+	DRAG_THRESHOLD       :: f32(4)
+	// OS double-click resolution window. SDL doesn't expose a hint for
+	// this on every platform, so we use a fixed 350 ms — generous enough
+	// to catch most users' second click in a streak without making
+	// single-click responsiveness sluggish.
+	MULTICLICK_WINDOW_NS :: i64(350_000_000)
+
+	now_ns := time.now()._nsec
+
+	if hovered && ctx.input.mouse_pressed[.Left] {
+		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
+			st.last_rect, ctx.input.mouse_pos)
+		clicks := ctx.input.mouse_click_count[.Left]
+		switch {
+		case clicks >= 3:
+			st.selection_anchor = 0
+			st.cursor_pos       = total_len
+			st.mouse_selecting  = false
+			st.press_link_idx   = -1
+			st.link_fire_at_ns  = 0
+		case clicks == 2:
+			full := concat_spans(copied, context.temp_allocator)
+			w_lo, w_hi := text_word_range(full, byte_pos)
+			st.selection_anchor = w_lo
+			st.cursor_pos       = w_hi
+			st.mouse_selecting  = false
+			st.press_link_idx   = -1
+			st.link_fire_at_ns  = 0
+		case:
+			link_idx := rich_link_span_at_byte(copied, byte_pos)
+			if link_idx >= 0 {
+				// Pending link: don't commit to selection yet.
+				st.press_pos        = ctx.input.mouse_pos
+				st.press_link_idx   = link_idx
+				st.selection_anchor = byte_pos
+				st.cursor_pos       = byte_pos
+				st.mouse_selecting  = false
+			} else {
+				st.cursor_pos       = byte_pos
+				st.selection_anchor = byte_pos
+				st.mouse_selecting  = true
+				st.press_link_idx   = -1
+				st.link_fire_at_ns  = 0
+			}
+		}
+		widget_focus(ctx, wid)
+		focused = true
+	}
+
+	// Pending-link → drag-selection conversion when the mouse moves
+	// past the threshold while still held down.
+	if st.press_link_idx >= 0 && ctx.input.mouse_buttons[.Left] {
+		dx := abs(ctx.input.mouse_pos.x - st.press_pos.x)
+		dy := abs(ctx.input.mouse_pos.y - st.press_pos.y)
+		if dx + dy > DRAG_THRESHOLD {
+			byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
+				st.last_rect, ctx.input.mouse_pos)
+			st.cursor_pos       = byte_pos
+			// selection_anchor already at press byte from the press handler
+			st.mouse_selecting  = true
+			st.press_link_idx   = -1
+			st.link_fire_at_ns  = 0
+		}
+	}
+
+	if st.mouse_selecting && ctx.input.mouse_buttons[.Left] {
+		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
+			st.last_rect, ctx.input.mouse_pos)
+		st.cursor_pos = byte_pos
+	}
+
+	if !ctx.input.mouse_buttons[.Left] {
+		// Release path. If we still have a pending link (never crossed
+		// the drag threshold), DON'T fire immediately — start the
+		// deferred-fire timer so a subsequent press (double / triple
+		// click) can cancel and run its own action instead.
+		if st.press_link_idx >= 0 && st.link_fire_at_ns == 0 {
+			st.link_fire_at_ns = now_ns + MULTICLICK_WINDOW_NS
+			widget_request_frame_at(ctx, st.link_fire_at_ns)
+			st.cursor_pos       = 0
+			st.selection_anchor = 0
+		}
+		st.mouse_selecting = false
+	}
+
+	// Deferred link fire: the multi-click window has elapsed without a
+	// follow-up press cancelling, so the press was indeed a single click.
+	// Fire the callback and clear state.
+	if st.press_link_idx >= 0 && st.link_fire_at_ns > 0 && now_ns >= st.link_fire_at_ns && !ctx.input.mouse_buttons[.Left] {
+		if st.press_link_idx < len(copied) {
+			target := copied[st.press_link_idx].link
+			if len(target) > 0 {
+				send(ctx, on_link_click(target))
+			}
+		}
+		st.press_link_idx  = -1
+		st.link_fire_at_ns = 0
+	}
+
+	if focused {
+		mods := ctx.input.modifiers
+		ctrl := (.Ctrl in mods) || (.Super in mods)
+		if ctrl && .A in ctx.input.keys_pressed {
+			st.selection_anchor = 0
+			st.cursor_pos       = total_len
+		}
+		if ctrl && .C in ctx.input.keys_pressed {
+			lo, hi := text_sel_range(st)
+			if lo != hi {
+				out := concat_spans_range(copied, lo, hi, context.temp_allocator)
+				_ = clipboard_set(out)
+			}
+		}
+	}
+
+	widget_set(ctx, wid, st)
+
+	lo, hi := text_sel_range(st)
+	return View_Rich_Text{
+		spans           = copied,
+		lines           = lines,
+		base            = base,
+		size            = size,
+		font            = font,
+		max_width       = max_width,
+		id              = wid,
+		selectable      = true,
+		sel_start       = lo,
+		sel_end         = hi,
+		focused         = focused,
+		color_selection = ctx.theme.color.selection,
+	}
+}
+
+// rich_text_hit_test maps a logical-pixel mouse position to an absolute
+// byte offset in `spans`-concatenation order. Walks the pre-computed
+// `lines` so it agrees with the render path exactly.
+@(private)
+rich_text_hit_test :: proc(r: ^Renderer, spans: []Text_Span, lines: []Rich_Line,
+                           default_size: f32, default_font: Font,
+                           rect: Rect, mp: [2]f32) -> int {
+	if len(lines) == 0 { return 0 }
+	mx := mp.x - rect.x
+	my := mp.y - rect.y
+
+	// Find which visual line by cumulative height.
+	line_idx := 0
+	cum_y: f32 = 0
+	for ln, i in lines {
+		if my < cum_y + ln.height {
+			line_idx = i
+			break
+		}
+		cum_y += ln.height
+		line_idx = i
+	}
+	line := lines[line_idx]
+
+	if len(line.segments) == 0 {
+		// Empty line — clamp to the absolute byte at the start of this line.
+		// Reconstruct by scanning previous lines' segments (rare path).
+		off := 0
+		for i in 0..<line_idx {
+			for seg in lines[i].segments {
+				off = rich_seg_absolute_end(spans, seg)
+			}
+		}
+		return off
+	}
+
+	// Find which segment by x.
+	seg_idx := len(line.segments) - 1
+	for seg, i in line.segments {
+		if mx < seg.x_offset + seg.width {
+			seg_idx = i
+			break
+		}
+	}
+	seg := line.segments[seg_idx]
+	span := spans[seg.span_idx]
+	seg_str := span.str[seg.byte_start:seg.byte_end]
+
+	abs_off := rich_seg_absolute_start(spans, seg)
+
+	local_x := mx - seg.x_offset
+	if local_x <= 0 { return abs_off }
+
+	seg_size := rich_span_size(default_size, span)
+	seg_font := rich_span_font(r, default_font, span)
+	byte_in_seg := byte_index_at_x(r, seg_str, seg_size, seg_font, local_x)
+	return abs_off + byte_in_seg
+}
+
+// rich_link_span_at_byte returns the index of the span containing
+// `byte_pos` in the spans-concatenation, but only if that span has
+// a non-empty `link` field. Returns -1 if the byte falls outside any
+// span or the containing span has no link.
+@(private)
+rich_link_span_at_byte :: proc(spans: []Text_Span, byte_pos: int) -> int {
+	pos := 0
+	for sp, i in spans {
+		span_end := pos + len(sp.str)
+		if byte_pos >= pos && byte_pos < span_end {
+			if len(sp.link) > 0 { return i }
+			return -1
+		}
+		pos = span_end
+	}
+	return -1
+}
+
+// rich_seg_absolute_start returns the byte offset where the given
+// segment starts in the spans-concatenation.
+@(private)
+rich_seg_absolute_start :: proc(spans: []Text_Span, seg: Rich_Segment) -> int {
+	off := 0
+	for i in 0..<seg.span_idx { off += len(spans[i].str) }
+	return off + seg.byte_start
+}
+
+// rich_seg_absolute_end returns the byte offset where the given
+// segment ends (exclusive) in the spans-concatenation.
+@(private)
+rich_seg_absolute_end :: proc(spans: []Text_Span, seg: Rich_Segment) -> int {
+	off := 0
+	for i in 0..<seg.span_idx { off += len(spans[i].str) }
+	return off + seg.byte_end
+}
+
+// concat_spans returns the concatenation of all spans' string content
+// into one allocated buffer. Used so we can hand a contiguous string
+// to runa's word iterator for double-click word selection.
+@(private)
+concat_spans :: proc(spans: []Text_Span, allocator := context.temp_allocator) -> string {
+	total := 0
+	for sp in spans { total += len(sp.str) }
+	if total == 0 { return "" }
+	buf := make([]byte, total, allocator)
+	n := 0
+	for sp in spans {
+		copy(buf[n:], sp.str)
+		n += len(sp.str)
+	}
+	return string(buf)
+}
+
+// concat_spans_range extracts the absolute-byte-range [lo, hi) from the
+// spans-concatenation as one allocated string. Used for clipboard copy
+// so the user gets back plain text, not the source-with-markup.
+@(private)
+concat_spans_range :: proc(spans: []Text_Span, lo, hi: int, allocator := context.temp_allocator) -> string {
+	if lo >= hi { return "" }
+	want := hi - lo
+	buf := make([]byte, want, allocator)
+	n := 0
+	pos := 0
+	for sp in spans {
+		span_end := pos + len(sp.str)
+		if span_end > lo && pos < hi {
+			seg_lo := max(lo, pos) - pos
+			seg_hi := min(hi, span_end) - pos
+			copy(buf[n:], sp.str[seg_lo:seg_hi])
+			n += seg_hi - seg_lo
+		}
+		pos = span_end
+		if pos >= hi { break }
+	}
+	return string(buf[:n])
 }
 
 // rich_text_links is the linkable variant of `rich_text`. Same shape

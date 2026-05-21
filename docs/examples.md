@@ -44,6 +44,7 @@ meant to exercise — the one-liners below are a jumping-off point.
 | `21_split`      | Nested `split` panes (row + column), drag dividers resize. |
 | `43_chat_input` | `chat_input` composer: Enter=submit, Shift+Enter=newline, paste normalisation, auto-grow, Ctrl+Enter, disabled state. |
 | `44_rich_text`  | `rich_text` / `rich_text_links`: mixed weight + italic + colour + size spans, word-wrap across span seams, inline-code chip, clickable links with cursor swap. |
+| `47_selectable_text` | `text_selectable`, `rich_text_selectable`, `rich_text_selectable_links`: mouse drag-selection, double-click word, triple-click select-all, `Ctrl-A`/`Ctrl-C`, deferred-fire link clicks that double / triple click can cancel. Reference layout for chat-style copyable message bubbles. |
 
 ### Composition and identity
 

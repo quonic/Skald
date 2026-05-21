@@ -8,6 +8,29 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Selectable text widgets — `text_selectable`, `rich_text_selectable`,
+  `rich_text_selectable_links`.** Three new builders alongside the
+  existing `text` / `rich_text` / `rich_text_links` static variants,
+  giving the same rendered output but with full mouse + keyboard
+  selection support. Click-drag selects a byte range; double-click
+  selects a word (UAX #29 boundaries via runa, so non-Latin scripts
+  segment correctly); triple-click selects everything; `Ctrl-A` /
+  `Ctrl-C` work; clicking outside the widget transfers focus and
+  clears the selection. `rich_text_selectable_links` adds clickable
+  link spans on top via a required `on_link_click(target)` callback;
+  a quick press-and-release fires the link after the multi-click
+  resolution window (~350 ms) elapses, while a press-then-drag past
+  a small threshold starts a drag-selection instead, and any
+  double / triple click cancels the pending link fire so the
+  word / select-all action wins cleanly. `Ctrl-C` on a selection
+  spanning multiple `Text_Span`s strips the markup and copies plain
+  text, so paste targets get the same characters the user saw on
+  screen. Build out of the box on both runa (default) and fontstash
+  backends. New example `examples/47_selectable_text` covers the
+  three procs in a chat-bubble-style layout; the
+  "Selectable chat-style message bubble" cookbook recipe walks
+  through the messenger use case end-to-end.
+
 - **`strike: bool` field on `Text_Span`.** Sibling to the existing
   `underline` — set `strike = true` on any span in a `rich_text` view
   to draw a strikethrough line through its glyphs. Strike position

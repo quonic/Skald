@@ -273,7 +273,37 @@ Tab characters expand to four spaces of visible width — no
 column-aligned tab stops, just a fixed advance — so pasted code
 blocks and log lines don't render `\t` as a missing-glyph tofu.
 
+### text_selectable
+
+```odin
+text_selectable(ctx, str: string, color: Color,
+                size: f32 = 14, font: Font = 0,
+                max_width: f32 = 0, id: Widget_ID = 0)
+```
+
+`text`'s input-aware sibling: same render shape, plus mouse selection
+and clipboard support. Use it when the rendered text needs to be
+copyable — chat / message bubbles, code blocks, log lines, status
+messages, error details. For inert chrome and labels, prefer plain
+`text`; it's lighter (no `Widget_ID`, no per-frame state machinery,
+no focus participation).
+
+| Gesture / shortcut | Action |
+|---|---|
+| Click + drag | Selects a byte range; the highlight follows the wrap |
+| Double-click | Selects the word under the cursor (UAX #29 boundaries via runa) |
+| Triple-click | Selects everything in the widget |
+| `Ctrl-A` / `Cmd-A` | Select all (focus required) |
+| `Ctrl-C` / `Cmd-C` | Copies the selected substring to the system clipboard |
+| Click outside the widget | Focus leaves, selection clears |
+
+Selection survives across frames while the widget retains focus; a
+click into a different focusable widget transfers focus and the old
+selection clears automatically — no Esc / cancel needed.
+
 ### rich_text
+
+
 
 ```odin
 rich_text(ctx, spans: []Text_Span, base: Color,
@@ -334,13 +364,75 @@ reason `search_field` is split out from `text_input`.
 | Want | Use |
 |---|---|
 | Single styled run | `text` |
+| Same, copyable by the user | `text_selectable` |
 | Mixed weight / colour / size, no inline chips, no links | `rich_text` |
 | Same plus clickable link spans | `rich_text_links` |
+| Mixed-style text the user can select + copy | `rich_text_selectable` |
+| Same plus clickable link spans (chat-bubble use case) | `rich_text_selectable_links` |
 | Editable text | `text_input` |
 
 **Example:** `examples/44_rich_text` — bold / italic mixing, mixed
 sizes + colours, multi-line wrapped paragraph, inline-code chip,
 and two clickable links with cursor swap.
+
+### rich_text_selectable
+
+```odin
+rich_text_selectable(ctx, spans: []Text_Span, base: Color,
+                     size: f32 = 14, font: Font = 0,
+                     max_width: f32 = 0, id: Widget_ID = 0)
+```
+
+`rich_text`'s input-aware sibling. Same span composition and wrap
+behaviour, plus the full selection model from `text_selectable`:
+click-drag selects a range, double-click selects a word, triple-click
+selects all, `Ctrl-A` / `Ctrl-C` work, click-outside clears.
+
+Selection ranges are absolute byte offsets into the concatenation of
+`spans[*].str` taken in document order. `Ctrl-C` strips span boundaries
+and copies plain text — pasting elsewhere gives the user the same
+characters they saw on screen, with no markup leaking out.
+
+Use it when the bubble / paragraph mixes formatting (bold, italic,
+inline-code chips, colour) AND the user is expected to be able to grab
+text out of it.
+
+### rich_text_selectable_links
+
+```odin
+rich_text_selectable_links(ctx, spans: []Text_Span, base: Color,
+                           on_link_click: proc(target: string) -> Msg,
+                           size: f32 = 14, font: Font = 0,
+                           max_width: f32 = 0, id: Widget_ID = 0)
+```
+
+The full chat-bubble widget: everything `rich_text_selectable` offers
+**plus** clickable link spans. Behaviour matches what users expect
+from selectable-text-with-links in browsers and native chat apps:
+
+| Gesture on a link span | Result |
+|---|---|
+| Quick press + release (no drag) | Fires `on_link_click(span.link)` after the multi-click resolution window (≈ 350 ms) expires |
+| Press + drag > 4 px (Manhattan) | Starts a drag-selection anchored at the press byte; no link fire |
+| Double-click | Word selection at click position; cancels the pending link fire |
+| Triple-click | Select-all; cancels the pending link fire |
+
+The deferred fire is what stops `Ctrl-A`-style multi-click selection
+gestures from accidentally firing the link as well. Single tap to
+navigate stays responsive (the 350 ms delay is below the threshold
+where most users perceive lag, and matches what `dblclick` resolution
+windows do in browsers).
+
+`on_link_click` is required (no `= nil` default) because of Odin's
+polymorphic nil-default limitation — a `proc(...) -> Msg = nil`
+parameter can't be monomorphised when callers omit it. Apps that
+want certain link spans to be inert can return a no-op `Msg` variant
+from `on_link_click` and ignore it in `update`.
+
+**Example:** `examples/47_selectable_text` — covers `text_selectable`,
+`rich_text_selectable`, and `rich_text_selectable_links` in one
+running window. Useful as a copy-paste starting point for chat-style
+message bubble layouts.
 
 ### rect
 
