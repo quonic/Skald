@@ -6,6 +6,20 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Changed
+
+- **`emoji_picker` search field now renders via `View_Text_Input`.**
+  The picker's search field used to be a plain `text` widget — it
+  captured keystrokes via the picker's own input pipeline but didn't
+  render a caret, so the field didn't visually read as a real text
+  input. It now constructs a `View_Text_Input` directly (same render
+  pathway every other text input goes through, same trick
+  `command_palette` already uses), so the caret, placeholder fade,
+  and scroll-on-overflow all match the rest of the framework's
+  inputs. Key handling stays in the picker's pipeline as before —
+  this is a rendering refactor, no behavioural change beyond the
+  caret being visible.
+
 ### Added
 
 - **`widget_hovered(ctx, id)` — z-aware input-gating helper.** Sibling

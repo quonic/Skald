@@ -388,22 +388,47 @@ _emoji_picker_impl :: proc(
 
 	// ---- Build popover content ----
 
-	// Search input — labels with placeholder when empty.
-	search_text := query
-	search_color := th.color.fg
-	if len(search_text) == 0 {
-		search_text  = "Search emoji…"
-		search_color = th.color.fg_muted
+	// Search input — render via `View_Text_Input` directly so the
+	// caret, placeholder fade, and scroll-on-overflow all match the
+	// rest of Skald's text inputs. We pass the picker's `query` /
+	// `cursor_pos` through as the input's text + caret; key handling
+	// stays in the picker's own pipeline above (no `text_input`
+	// builder runs, so it doesn't try to re-handle input). Same
+	// pattern as `command_palette`.
+	//
+	// `widget_make_sub_id` derives a stable, collision-safe child id
+	// from the picker's own id — sets the explicit-bit so it can't
+	// alias a positional auto-id, and uses the framework's mul+add
+	// mixing math so it can't collide with a user-supplied
+	// `hash_id("...")` either. Keeps the search field's `last_rect`
+	// from clobbering the picker trigger's recorded rect.
+	search_id := widget_make_sub_id(id, 1)
+	search_query := query
+	search_cursor := clamp(st.cursor_pos, 0, len(search_query))
+	q_vline := []Visual_Line{
+		Visual_Line{start = 0, end = len(search_query), consume_space = false},
 	}
-	search_view := col(
-		text(search_text, search_color, th.font.size_md),
-		width  = search_rect.w,
-		height = EMOJI_SEARCH_H,
-		padding = th.spacing.sm,
-		bg     = th.color.surface,
-		radius = th.radius.sm,
-		main_align = .Center, cross_align = .Start,
-	)
+	search_view := View(View_Text_Input{
+		id                = search_id,
+		text              = search_query,
+		placeholder       = "Search emoji…",
+		color_bg          = th.color.surface,
+		color_fg          = th.color.fg,
+		color_placeholder = th.color.fg_muted,
+		color_border      = th.color.border,
+		color_border_idle = th.color.border,
+		color_caret       = th.color.fg,
+		color_selection   = th.color.selection,
+		radius            = th.radius.sm,
+		padding           = {th.spacing.sm, th.spacing.sm},
+		font_size         = th.font.size_md,
+		width             = search_rect.w,
+		height            = EMOJI_SEARCH_H,
+		focused           = true,
+		cursor_pos        = search_cursor,
+		selection_anchor  = search_cursor,
+		visual_lines      = q_vline,
+	})
 
 	// Recents row (when visible).
 	recents_view: View
