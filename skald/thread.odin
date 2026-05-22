@@ -177,6 +177,20 @@ cmd_thread :: proc($Msg: typeid,
 	// worker, pulls Job out of `data`, calls work, pushes the Msg
 	// through op.pool, and frees Job + Op. SDL_PushEvent wakes the
 	// main loop so a lazy-redraw app responds immediately.
+	//
+	// IMPORTANT: destroy this thread's temp_allocator before exit.
+	// Each worker runs on a fresh OS thread (no pool) whose
+	// `context.temp_allocator` is a `@thread_local` arena that
+	// allocates heap memory blocks on first use. When the thread
+	// dies, the arena's struct in TLS disappears but the heap blocks
+	// it pointed to are orphaned — a multi-GB leak over a day's
+	// polling. `free_all` would only reset the cursor and free
+	// all-but-the-first block; we need `arena_destroy` (via
+	// `default_temp_allocator_destroy`) to release the first block
+	// as well. Worker code that wants to return owned strings /
+	// slices via Msg must allocate them with `context.allocator`
+	// (the heap) — temp memory is gone the instant this runner
+	// finishes.
 	runner :: proc(data: rawptr) {
 		j := cast(^Job) data
 		msg := j.work(j.payload)
@@ -188,6 +202,8 @@ cmd_thread :: proc($Msg: typeid,
 		thread_pool_wake(pool)
 		free(j.op)
 		free(j)
+		runtime.default_temp_allocator_destroy(
+			cast(^runtime.Default_Temp_Allocator) context.temp_allocator.data)
 	}
 
 	op := new(Thread_Op(Msg))
@@ -216,6 +232,11 @@ cmd_thread_simple :: proc($Msg: typeid,
 		op:   ^Thread_Op(Msg),
 	}
 
+	// Same temp-allocator destroy contract as `cmd_thread`'s runner —
+	// each worker runs on its own thread whose `@thread_local`
+	// default_temp_allocator orphans its heap blocks on thread exit
+	// unless we `arena_destroy` (via `default_temp_allocator_destroy`)
+	// before returning.
 	runner :: proc(data: rawptr) {
 		j := cast(^Job) data
 		msg := j.work()
@@ -227,6 +248,8 @@ cmd_thread_simple :: proc($Msg: typeid,
 		thread_pool_wake(pool)
 		free(j.op)
 		free(j)
+		runtime.default_temp_allocator_destroy(
+			cast(^runtime.Default_Temp_Allocator) context.temp_allocator.data)
 	}
 
 	op := new(Thread_Op(Msg))

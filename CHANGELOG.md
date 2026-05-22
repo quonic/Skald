@@ -6,6 +6,17 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Fixed
+
+- **Worker thread temp_allocator leak fixed.** `cmd_thread` and
+  `cmd_thread_simple` spawn a fresh OS thread per call whose
+  `@thread_local` default temp_allocator orphaned its heap blocks on
+  thread exit — multi-GB process growth over hours of polling.
+  Runners now call `runtime.default_temp_allocator_destroy` before
+  exit. The documented worker contract is unchanged: returned-Msg
+  strings / slices must be heap-allocated, not temp-arena (the
+  temp_allocator is destroyed the instant the worker returns).
+
 ### Changed
 
 - **`emoji_picker` search field now renders via `View_Text_Input`.**
