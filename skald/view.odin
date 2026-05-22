@@ -9123,7 +9123,7 @@ context_menu :: proc(
 	rows := make([dynamic]View, 0, len(items), context.temp_allocator)
 	for label, i in items {
 		append(&rows, button(ctx, label, on_select(i),
-			color      = th.color.elevated,
+			bg         = th.color.elevated,
 			fg         = th.color.fg,
 			radius     = th.radius.sm,
 			padding    = {th.spacing.md, th.spacing.sm},
