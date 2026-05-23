@@ -8845,12 +8845,24 @@ tabs :: proc(
 	labels:    []string,
 	active:    int,
 	on_change: proc(index: int) -> Msg,
+	id:        Widget_ID = 0,
 ) -> View {
 	th := ctx.theme
+
+	// Resolve a stable id for the tabs strip itself, then derive each
+	// tab button's id from it via `widget_make_sub_id`. Without this,
+	// tab buttons used pure positional auto-ids — if anything in the
+	// view tree above the tabs added or removed widgets between
+	// frames (e.g. a sidebar list growing as new messages arrived),
+	// the buttons' ids would shift and a previously-focused tab's
+	// focus ring could land on a different button than the user
+	// clicked. Sub-ids close that whole class of bug.
+	tabs_id := widget_resolve_id(ctx, id)
 
 	items := make([]View, len(labels), context.temp_allocator)
 	for label, i in labels {
 		is_active := i == active
+		btn_id := widget_make_sub_id(tabs_id, u64(i + 1))
 
 		// Tabs read cleanly on any parent when active/inactive don't
 		// fight the parent's bg. Inactive: plain `surface` — blends
@@ -8878,7 +8890,8 @@ tabs :: proc(
 
 		items[i] = col(
 			button(ctx, label, on_change(i),
-				bg     = bg,
+				id        = btn_id,
+				bg        = bg,
 				fg        = fg,
 				radius    = th.radius.sm,
 				padding   = {th.spacing.md, th.spacing.sm},

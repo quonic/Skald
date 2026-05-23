@@ -19,6 +19,19 @@ bug fixes bump the patch.
   ceiling instead of accumulating forever. No app-side code change
   required.
 
+### Fixed
+
+- **`tabs` widget — focus ring could land on the wrong tab.** Each tab
+  button used a positional auto-id, so any widget churn above the
+  tabs strip in the same frame (e.g. a sidebar list growing as new
+  messages arrived) shifted the auto-id counter and the previously-
+  focused tab's id mapped to a different button — visible as a
+  focus ring on a non-active tab. Tab buttons now use
+  `widget_make_sub_id` for stable cross-frame identity. `tabs` also
+  gains an optional `id: Widget_ID = 0` parameter for apps that want
+  to pin the strip's id explicitly (`skald.hash_id("settings-tabs")`);
+  default behaviour unchanged for existing callers.
+
 ### Added
 
 - `cursor: Cursor_Shape` parameter on `canvas()` — declarative cursor
