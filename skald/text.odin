@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:strings"
 import fs "vendor:fontstash"
 import vk "vendor:vulkan"
+import runa "third_party/runa"
 
 // INTER_VARIABLE is the default UI font — Inter Variable by Rasmus Andersson,
 // OFL-1.1 licensed. It's baked into the binary via #load so apps have usable
@@ -360,6 +361,18 @@ text_on_update :: proc(data: rawptr, dirty: [4]f32, _: rawptr) {
 // always loaded and is the default for `draw_text`.
 font_default :: proc(r: ^Renderer) -> Font {
 	return r.text.default_font
+}
+
+// text_shape_cache_size returns the number of distinct (font, size, text)
+// entries runa's shape cache currently holds. Since runa 1.2.0 the cache
+// is bounded by a soft cap (default 4096 ≈ ~4-8 MB at typical body
+// sizes) with O(1) LRU eviction past the cap — apps generating high
+// unique-text churn (code editors, log viewers, animated counters)
+// now have a fixed memory ceiling instead of accumulating forever.
+// Returns 0 on the fontstash backend.
+text_shape_cache_size :: proc(r: ^Renderer) -> int {
+	if r.text.runa_state == nil { return 0 }
+	return runa.cache_size(&r.text.runa_state.cache)
 }
 
 // font_bold / font_italic / font_bold_italic return the handles of the

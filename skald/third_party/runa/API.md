@@ -1,4 +1,4 @@
-# runa API reference (v1.0.0)
+# runa API reference (v1.2.0)
 
 Pure-Odin text engine — parse, shape, line-break, raster, atlas.
 Public API lives in three layers: the **facade** in `runa.odin`,
@@ -86,6 +86,34 @@ line_destroy     :: proc(l: ^Line, allocator := context.allocator)
 across calls; zero-allocation cache hits are verified by the
 test suite.
 
+### Cache
+
+```odin
+cache_make         :: proc(allocator := context.allocator,
+                           max_entries: int = 4096) -> Cache
+cache_destroy      :: proc(c: ^Cache)
+cache_size         :: proc(c: ^Cache) -> int
+cache_capacity     :: proc(c: ^Cache) -> int
+cache_set_capacity :: proc(c: ^Cache, max_entries: int)
+```
+
+The shape cache holds memoised `[]Shaped_Glyph` keyed by
+`(font, size, axis_state, text)`. Cache hits return the same slice
+across calls with zero heap allocations.
+
+Eviction is **classic O(1) LRU** with a soft cap of `max_entries`
+(default 4096, roughly 4-8 MB at body sizes). When inserting past
+the cap, the least-recently-used entry is evicted and its glyph
+storage + interned text key are freed. Pass `max_entries = 0` to
+disable eviction entirely — suitable for short-lived caches or
+workloads with a known finite key set, but unbounded growth on
+high-churn unique text.
+
+`cache_size` / `cache_capacity` / `cache_set_capacity` exist for
+apps that want to monitor or tune the cache at runtime (e.g. an
+editor that grows the cap as the document gets bigger, or a
+debug overlay that displays cache pressure).
+
 ### Segmentation iterators (UAX #29)
 
 ```odin
@@ -124,8 +152,26 @@ requested form; the caller owns the result.
 
 ```odin
 raster_glyph :: proc(font: ^Font, gid: Glyph_ID, size: f32, subpx_x: u8,
-                     atlas: ^Atlas, allocator := context.allocator) -> (Atlas_Slot, Error)
+                     atlas: ^Atlas, allocator := context.allocator,
+                     hint: bool = true) -> (Atlas_Slot, Error)
 ```
+
+`hint: true` (the default) enables the minimal Latin autohinter —
+pulls outline Y coordinates onto integer pixel rows for the
+baseline, x-height, cap-height, ascender, and descender blue
+zones, with relative-snap suppression of round-letter overshoot.
+Fixes the unhinted "fluffy bottom-of-S lip" and "lump on round
+caps at body sizes" artifacts without a TrueType bytecode
+interpreter.
+
+Latin-only — non-Latin fonts have `_hint_metrics.valid = false`,
+so the hinter is silently a no-op on Arabic / Devanagari / CJK
+fonts (it would distort more than help under this heuristic).
+
+Pass `hint: false` to force unhinted outline rendering — e.g.
+for "honest pixel" display work, design-comparison screenshots,
+or callers that have visually calibrated against pre-v1.1
+unhinted output.
 
 Renders one glyph into the shared atlas at the requested subpixel
 offset. COLRv0 / COLRv1 emoji are auto-detected and rasterized
@@ -147,7 +193,7 @@ BaseGlyphList.
 | `raster` | Analytic-coverage scanline rasterizer + atlas allocator (shelf packing, alpha + RGBA pages). |
 | `normalize` | UAX #15 canonical / compatibility normalization. `to_nfc / to_nfd / to_nfkc / to_nfkd`, `is_nfc / is_nfd`, plus `ccc(r)` for combining class lookups. |
 
-## Unicode conformance (v0.9.2)
+## Unicode conformance
 
 | Standard | Conformance |
 |---|---|
@@ -191,7 +237,7 @@ BaseGlyphList.
 | `tools/deep_stress.odin`      | 2 000-iter end-to-end loop under `Tracking_Allocator` for leak detection. Outlines every glyph of CFF1 + CFF2 fonts and shapes a Devanagari sample set. |
 | `tools/bit_flip_fuzz.odin`    | Bit-flipped corpus fuzz — runs glyph extraction + shape against mangled SFNTs and asserts no panics. |
 
-## Known gaps for v1.0 final
+## Known gaps
 
 - **CFF2 ligature component tracking** — GPOS lookup type 5
   (mark-to-ligature) currently attaches all marks to the last

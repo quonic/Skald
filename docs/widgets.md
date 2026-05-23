@@ -273,6 +273,14 @@ Tab characters expand to four spaces of visible width — no
 column-aligned tab stops, just a fixed advance — so pasted code
 blocks and log lines don't render `\t` as a missing-glyph tofu.
 
+**Shape cache.** Skald's text engine (runa, default backend) memoises
+shaping by `(font, size, text)` for fast re-renders. The cache is
+bounded — soft default of 4096 entries (≈ 4-8 MB at body sizes) with
+O(1) LRU eviction past the cap. Apps with high text churn (code
+editors, log viewers, animated counters, financial tickers) hit the
+cap and recycle oldest entries, keeping memory flat. Call
+`skald.text_shape_cache_size(r)` to monitor the current count.
+
 ### text_selectable
 
 ```odin

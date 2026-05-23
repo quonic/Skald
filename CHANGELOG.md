@@ -6,6 +6,25 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Changed
+
+- **Vendored runa refreshed to 1.2.0 — shape cache now LRU-evicts at
+  4096 entries.** Pre-1.2.0 the shape cache grew without bound for the
+  renderer's lifetime; a stress test at 2000 unique strings/sec showed
+  ~100 MB/min of heap growth. Runa 1.2.0 caps the cache at a soft
+  default of 4096 entries (~4-8 MB at typical body sizes) with O(1)
+  LRU eviction; same stress test now plateaus at +1 MB / 2 min.
+  Real-world apps with high text churn (code editors, log viewers,
+  animated counters, financial tickers) now have a fixed memory
+  ceiling instead of accumulating forever. No app-side code change
+  required.
+
+### Added
+
+- `skald.text_shape_cache_size(r)` — diagnostic returning the count of
+  shape-cache entries currently held by the runa backend. Returns 0
+  on the fontstash backend (no shape cache exists there).
+
 ### Fixed
 
 - **Worker thread temp_allocator leak fixed.** `cmd_thread` and
