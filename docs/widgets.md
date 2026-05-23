@@ -35,7 +35,7 @@ per row" recipe walks through both styles.
 ## Contents
 
 - [Layout](#layout) — col, row, wrap_row, responsive, grid, spacer, flex, sized, clip, scroll, split
-- [Primitives](#primitives) — text, rect, divider, image
+- [Primitives](#primitives) — text, rect, divider, image, canvas
 - [Buttons and links](#buttons-and-links) — button, link
 - [Text entry](#text-entry) — text_input, search_field, number_input
 - [Booleans and choice](#booleans-and-choice) — checkbox, radio, radio_group, toggle, select, combobox, segmented
@@ -539,6 +539,50 @@ overlay primitives (lines, markers, text) in the same canvas node — the
 ordinary `image()` widget can't be interleaved with `draw_*` calls
 because it lives in the view tree, not the immediate-mode canvas
 pass. Same `Image_Fit` semantics as the widget.
+
+### canvas
+
+```odin
+canvas(ctx, user: ^T,
+       draw:   proc(user: ^T, painter: Canvas_Painter),
+       id     = 0,
+       width  = 0, height = 0,
+       min_w  = 0, min_h  = 0,
+       cursor = .Default)
+```
+
+Framework escape hatch for arbitrary drawing. The widget claims a
+rectangular slot in the layout; at render time, your `draw` callback
+runs with a `Canvas_Painter` you can use to emit any of the public
+`draw_*` primitives (`draw_rect`, `draw_text`, `draw_triangle_strip`,
+`draw_image`, etc.). Skald opens a clip to the canvas bounds before
+the callback, so draws outside the rect are scissored away.
+
+`user` is an opaque pointer the builder passes through to the callback
+— pass app state, a per-frame snapshot, or any context the painter
+needs. Zero on `width` / `height` means "fill the parent's assigned
+extent"; non-zero forces a fixed size. `min_w` / `min_h` give the
+canvas an intrinsic floor so it doesn't collapse inside a
+content-sized stack.
+
+`cursor` sets the OS pointer shape while the mouse is over the
+canvas. `.Default` (the zero value) leaves the cursor unchanged.
+Paint apps pick per-tool (`.Crosshair` for brush, `.Move` for pan /
+camera, `.Not_Allowed` for a disabled tool). The field is read every
+frame from app state, so changing the active tool just changes the
+cursor on the next render — no callback wiring. For pixel-precise
+brush rings or magnifier glasses, draw those inside the `draw`
+callback anchored to `painter.mouse_pos` (OS cursors don't carry
+custom imagery).
+
+The canvas tracks its `last_rect`, so apps that need to do hit-testing
+against `ctx.input.mouse_pos` can grab it via `widget_get(ctx, id,
+.Canvas).last_rect`. Press / drag / release flow through `ctx.input`
+the same way as any other interactive widget.
+
+**Example: `examples/37_canvas`.** Drag the mouse or a pen to draw
+pressure-varying strokes; `cursor = .Crosshair` shows how the OS
+pointer shape switches when you hover.
 
 ---
 

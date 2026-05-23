@@ -262,7 +262,7 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 			spacing     = th.spacing.md,
 			cross_align = .Center,
 		),
-		skald.flex(1, skald.canvas(ctx, snap, paint, id = cid)),
+		skald.flex(1, skald.canvas(ctx, snap, paint, id = cid, cursor = .Crosshair)),
 		cross_align = .Stretch,
 	)
 }

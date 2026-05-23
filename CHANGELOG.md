@@ -21,6 +21,12 @@ bug fixes bump the patch.
 
 ### Added
 
+- `cursor: Cursor_Shape` parameter on `canvas()` — declarative cursor
+  applied while the mouse hovers the canvas. Paint apps pick per-tool
+  (`.Crosshair` for brush, `.Move` for pan, etc.); reads from app
+  state every frame, no callback wiring. Zero-default (`.Default`)
+  preserves the prior behaviour of leaving the cursor unchanged.
+
 - `skald.text_shape_cache_size(r)` — diagnostic returning the count of
   shape-cache entries currently held by the runa backend. Returns 0
   on the fontstash backend (no shape cache exists there).

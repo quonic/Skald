@@ -759,6 +759,13 @@ View_Canvas :: struct {
 	draw:   proc(user: rawptr, painter: Canvas_Painter),
 	size:   [2]f32,
 	min:    [2]f32,
+	// cursor is the OS pointer shape Skald applies while the mouse
+	// is over the canvas. `.Default` (the zero value) leaves the
+	// cursor unchanged. Paint apps pick a shape per active tool
+	// (`.Crosshair` for brush, `.Move` for pan, `.Not_Allowed` for
+	// disabled targets, etc.) — the field is per-frame, so the
+	// builder just reads from app state in `view`.
+	cursor: Cursor_Shape,
 }
 
 // Canvas_Painter is the handle `View_Canvas` draw callbacks receive.
@@ -3312,11 +3319,21 @@ canvas :: proc(
 	height: f32 = 0,
 	min_w:  f32 = 0,
 	min_h:  f32 = 0,
+	cursor: Cursor_Shape = .Default,
 ) -> View {
 	rid := widget_resolve_id(ctx, id)
 	// Stamp kind so next frame can retrieve last_rect via widget_last_rect.
 	st := widget_get(ctx, rid, .Canvas)
 	widget_set(ctx, rid, st)
+
+	// Hover → cursor switch: when the mouse is inside this canvas's
+	// last-frame rect AND a non-default cursor was requested, ask the
+	// run loop to apply it for this frame. `widget_hovered` is the
+	// z-aware variant so popovers / dialogs above the canvas correctly
+	// suppress the cursor change.
+	if cursor != .Default && widget_hovered(ctx, rid) {
+		cursor_request(ctx, cursor)
+	}
 
 	// Per-monomorphization pack: the non-polymorphic View node needs a
 	// rawptr + rawptr-taking dispatcher, but the callback is typed
@@ -3338,11 +3355,12 @@ canvas :: proc(
 	}
 
 	return View_Canvas{
-		id   = rid,
-		user = rawptr(pack),
-		draw = dispatch,
-		size = {width, height},
-		min  = {min_w, min_h},
+		id     = rid,
+		user   = rawptr(pack),
+		draw   = dispatch,
+		size   = {width, height},
+		min    = {min_w, min_h},
+		cursor = cursor,
 	}
 }
 
