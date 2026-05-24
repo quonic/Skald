@@ -1453,6 +1453,93 @@ to `* Untitled`.
 
 ---
 
+## Audio
+
+### Record a voice clip and play it back
+
+`skald/audio.odin` gives you raw PCM capture + playback. Encoding
+(Opus / AAC) is your app's job — this recipe records to an in-memory
+`f32` buffer and plays it straight back. Add your codec at the
+send/receive boundary.
+
+```odin
+State :: struct {
+    recording: bool,
+    capture:   ^skald.Audio_Capture,
+    samples:   [dynamic]f32,
+    playing:   bool,
+    playback:  ^skald.Audio_Playback,
+}
+
+Msg :: union { Record_Toggle, Play, Audio_Tick }
+
+// Start / stop recording.
+case Record_Toggle:
+    if out.recording {
+        skald.audio_capture_close(out.capture)
+        out.capture = nil; out.recording = false
+    } else {
+        clear(&out.samples)
+        cap, ok := skald.audio_capture_open(rate = 48000, channels = 1)
+        if !ok do return out, {}
+        out.capture = cap; out.recording = true
+        return out, skald.cmd_delay(0.02, Audio_Tick{})   // start polling
+    }
+
+// Poll the mic ~50 Hz while recording; stop ticking when idle.
+case Audio_Tick:
+    if out.recording && out.capture != nil {
+        avail := skald.audio_capture_available(out.capture)
+        if avail > 0 {
+            buf := make([]f32, avail, context.temp_allocator)
+            n := skald.audio_capture_read(out.capture, buf)
+            for i in 0..<n do append(&out.samples, buf[i])
+        }
+        return out, skald.cmd_delay(0.02, Audio_Tick{})
+    }
+
+// Play the captured buffer.
+case Play:
+    pb, ok := skald.audio_play_open(rate = 48000, channels = 1)
+    if !ok do return out, {}
+    skald.audio_play_write(pb, out.samples[:])
+    out.playback = pb; out.playing = true
+    return out, skald.cmd_delay(0.02, Audio_Tick{})   // poll for finish
+```
+
+The poll loop (`Audio_Tick` re-scheduling itself via `cmd_delay`)
+drains the mic without forcing `always_redraw` — when nothing's
+recording or playing, no ticks fire. SDL buffers captured audio
+internally, so a 50 Hz poll won't drop samples.
+
+For the codec step: pull `out.samples[:]` (f32 PCM), run it through
+your encoder (libopus / an AAC lib — app dependency), send. On
+receive, decode back to f32 and `audio_play_write` it.
+
+### Let the user pick a microphone
+
+```odin
+mics := skald.audio_capture_devices()          // []Audio_Device {id, name}
+names := make([]string, len(mics), context.temp_allocator)
+for d, i in mics do names[i] = d.name
+
+skald.select(ctx, s.sel_mic_name, names,
+    proc(v: string) -> Msg { return Mic_Selected(v) })
+
+// on selection, store the matching id:
+case Mic_Selected:
+    out.sel_mic_name = string(v)
+    for d in mics do if d.name == string(v) { out.sel_mic_id = d.id; break }
+
+// then open with it:
+skald.audio_capture_open(device_id = out.sel_mic_id)
+```
+
+`device_id = 0` (the default) uses the system mic — most apps never
+need the picker. `audio_playback_devices` is the output-device twin.
+Devices can hot-plug; re-enumerate when your settings screen opens.
+See `examples/48_audio` for the full record-meter-playback flow.
+
 ## Dev tools
 
 ### Debug inspector (F12)

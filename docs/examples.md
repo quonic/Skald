@@ -99,6 +99,7 @@ meant to exercise — the one-liners below are a jumping-off point.
 | Example | What it teaches |
 |---------|-----------------|
 | `40_threads` | `cmd_thread` and `cmd_thread_simple` running blocking work on background threads while the UI stays responsive. Sleep-simulated queries with variable latency, stale-result discipline via job_id, in-flight counter, spinner that keeps spinning to prove the main thread isn't blocked. The recipe for using any sync library (postgres, sqlite, HTTP) without freezing the app. |
+| `48_audio` | `audio_capture_*` / `audio_play_*`: enumerate mics, record raw PCM with a live input-level meter, play it back. Device picker via `select`. Codec-neutral (raw f32 PCM) — the encode/decode step is the app's. Polls the mic via a self-rescheduling `cmd_delay` tick so it doesn't force always-redraw. |
 
 ### Composition
 

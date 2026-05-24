@@ -1597,3 +1597,61 @@ Round-trip window geometry through the app's own persistence so the
 window remembers its size and position between launches. See the
 cookbook recipe "Save and restore window size / position between
 launches."
+
+## Audio capture and playback
+
+Microphone capture and PCM playback via SDL3 — no new C dependency.
+Samples are 32-bit float (`f32`); SDL converts to/from the device's
+native format. **Codec is the app's job** — Skald handles only raw
+PCM, so Opus / AAC encoding lives in the app. The audio subsystem
+inits lazily on first open, so apps that never use it pay nothing.
+
+### Capture
+
+```odin
+audio_capture_devices(allocator = context.temp_allocator) -> []Audio_Device
+audio_capture_open(device_id = 0, rate = 48000, channels = 1) -> (^Audio_Capture, bool)
+audio_capture_available(cap) -> int            // queued samples
+audio_capture_read(cap, into: []f32) -> int    // pull samples, returns count
+audio_capture_close(cap)
+```
+
+`device_id = 0` opens the system default mic. Capture starts on open;
+poll `audio_capture_read` from your update loop (or a `cmd_delay`
+tick) to drain samples as they arrive — SDL buffers internally so a
+slow poll won't drop audio. 48 kHz mono is the right default for voice.
+
+### Playback
+
+```odin
+audio_playback_devices(allocator = context.temp_allocator) -> []Audio_Device
+audio_play_open(device_id = 0, rate = 48000, channels = 1) -> (^Audio_Playback, bool)
+audio_play_write(pb, samples: []f32) -> bool   // queue PCM
+audio_play_queued(pb) -> int                   // samples still pending
+audio_play_close(pb)
+```
+
+Write a whole decoded clip at once, then poll `audio_play_queued`
+until it hits 0 to detect playback finish (or drive a progress bar).
+
+### Device selection
+
+`audio_capture_devices` / `audio_playback_devices` return
+`[]Audio_Device{ id, name }`. Feed the names to a `select`, store the
+chosen `id`, pass it to the matching `_open`. No dedicated audio
+widget — the picker is a `select`, the controls are `button`s, the
+level meter is a `rect` whose width tracks input RMS.
+
+### Robustness + platform notes
+
+- **Device removal is safe.** Unplugging mid-use doesn't crash —
+  capture goes quiet (`audio_capture_read` returns 0), and a
+  default-device stream auto-migrates to the new default.
+- **macOS / iOS mic capture needs `NSMicrophoneUsageDescription`** in
+  the app bundle's Info.plist (a packaging concern; playback needs no
+  permission).
+- Cross-platform via SDL3: Linux (Pulse / PipeWire / ALSA), macOS
+  (CoreAudio), Windows (WASAPI).
+
+**Example: `examples/48_audio`** — pick a mic, record with a live
+input-level meter, play it back. Raw PCM, no codec.

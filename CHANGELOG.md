@@ -6,6 +6,17 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Added
+
+- **Audio capture + playback (`skald/audio.odin`).** Microphone
+  recording and PCM playback via SDL3 — no new C dependency.
+  `audio_capture_open` / `_read` pull f32 PCM from a mic;
+  `audio_play_open` / `_write` queue it to a speaker; device
+  enumeration drives a `select`-based picker. Codec-neutral —
+  encoding (Opus / AAC) is the app's job. macOS mic capture needs an
+  `NSMicrophoneUsageDescription` Info.plist key. New example
+  `examples/48_audio`; cookbook recipe for the record→play flow.
+
 ### Changed
 
 - **Vendored runa refreshed to 1.2.0 — shape cache now LRU-evicts at
