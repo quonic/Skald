@@ -40,6 +40,12 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **Multiline `text_input` in fill mode scrolled prematurely.** A
+  stretched editor (`flex(1, text_input(height = 0, multiline = true))`)
+  scrolled once content passed ~6 lines even with room below — the
+  scroll math used the fixed placeholder height, not the field's real
+  stretched height. Now falls back to `last_rect.h` when `height == 0`.
+
 - **`tabs` widget — focus ring could land on the wrong tab.** Each tab
   button used a positional auto-id, so any widget churn above the
   tabs strip in the same frame (e.g. a sidebar list growing as new

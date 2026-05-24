@@ -4359,7 +4359,15 @@ _text_input_impl :: proc(
 	// when the mouse is over the widget (even if a different input owns
 	// focus); caret motion auto-scrolls to keep the caret onscreen so
 	// typing past the bottom edge follows the cursor down.
-	viewport_h := h - 2 * pad.y
+	// When a flex/Stretch parent sizes the field (`height == 0`), `h` is
+	// only the 6-line placeholder — the real on-screen height is
+	// st.last_rect.h. Use that for the scroll viewport (mirrors the width
+	// fallback above); keep `h` for the first frame before any rect exists.
+	// Without this, fill-mode editors scroll once content passes ~6 lines
+	// even with empty room below.
+	effective_h := h
+	if height <= 0 && st.last_rect.h > 0 { effective_h = st.last_rect.h }
+	viewport_h := effective_h - 2 * pad.y
 	content_h  := f32(len(visual_lines)) * line_h
 	if multiline {
 		max_off := content_h - viewport_h
