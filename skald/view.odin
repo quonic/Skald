@@ -373,6 +373,7 @@ View_Text_Input :: struct {
 	radius:            f32,
 	padding:           [2]f32,
 	font_size:         f32,
+	font:              Font,
 	width:             f32,
 	height:            f32,
 	focused:           bool,
@@ -3699,6 +3700,7 @@ _text_input_impl :: proc(
 	width:       f32    = 0,
 	height:      f32    = 0,
 	font_size:   f32    = 0,
+	font:        Font   = 0,
 	padding:     [2]f32 = {0, 0},
 	bg:          Color  = {},
 	fg:          Color  = {},
@@ -3863,10 +3865,11 @@ _text_input_impl :: proc(
 		rel_x: f32,
 		mouse_y, content_y0, line_h: f32,
 		multiline: bool,
+		font: Font,
 	) -> int {
 		if renderer == nil { return 0 }
 		if !multiline {
-			return byte_index_at_x(renderer, text, fs, 0, rel_x)
+			return byte_index_at_x(renderer, text, fs, font, rel_x)
 		}
 		ry := mouse_y - content_y0
 		line := int(ry / line_h)
@@ -3875,7 +3878,7 @@ _text_input_impl :: proc(
 		if last < 0 { return 0 }
 		if line > last { line = last }
 		vl := vls[line]
-		col_in_line := byte_index_at_x(renderer, text[vl.start:vl.end], fs, 0, rel_x)
+		col_in_line := byte_index_at_x(renderer, text[vl.start:vl.end], fs, font, rel_x)
 		return vl.start + col_in_line
 	}
 
@@ -3883,7 +3886,7 @@ _text_input_impl :: proc(
 	// motion agree. An empty string still returns the font's line height.
 	line_h: f32 = fs
 	if ctx.renderer != nil {
-		_, line_h = measure_text(ctx.renderer, "Ag", fs)
+		_, line_h = measure_text(ctx.renderer, "Ag", fs, font)
 	}
 	// Multiline scrolls vertically against st.scroll_y. content_y0 is
 	// the y where the first line's glyphs land *after* scrolling — click
@@ -3912,7 +3915,7 @@ _text_input_impl :: proc(
 	if width <= 0 && st.last_rect.w == 0 && do_wrap {
 		widget_request_frame_at(ctx, 1)
 	}
-	visual_lines := build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap)
+	visual_lines := build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap, font)
 
 	// Password: compute a `•`-per-rune mask used for hit-testing and
 	// (later) rendering. The edit path stays on `new_value` (real bytes);
@@ -3997,7 +4000,7 @@ _text_input_impl :: proc(
 			focused = true
 			idx := resolve_click_idx(ctx.renderer, disp_text, visual_lines,
 				fs, click_rel_x,
-				ctx.input.mouse_pos.y, content_y0, line_h, multiline)
+				ctx.input.mouse_pos.y, content_y0, line_h, multiline, font)
 			if password { idx = mask_byte_to_real_byte(new_value, idx) }
 			clicks := ctx.input.mouse_click_count[.Left]
 			// Password mode: double-click would collapse to select-all
@@ -4050,7 +4053,7 @@ _text_input_impl :: proc(
 	if st.mouse_selecting && !sb_captured && ctx.input.mouse_buttons[.Left] && ctx.renderer != nil {
 		cursor = resolve_click_idx(ctx.renderer, disp_text, visual_lines,
 			fs, click_rel_x,
-			ctx.input.mouse_pos.y, content_y0, line_h, multiline)
+			ctx.input.mouse_pos.y, content_y0, line_h, multiline, font)
 		if password { cursor = mask_byte_to_real_byte(new_value, cursor) }
 	}
 	if ctx.input.mouse_released[.Left] {
@@ -4257,7 +4260,7 @@ _text_input_impl :: proc(
 		// rebuild — O(runes) with a measure_text per rune — and keeping
 		// one source of truth for lines is worth it.
 		if multiline && new_value != value {
-			visual_lines = build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap)
+			visual_lines = build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap, font)
 		}
 
 		// Home/End: multiline scopes to the current *visual* line (the
@@ -4292,7 +4295,7 @@ _text_input_impl :: proc(
 			cur_line := visual_line_of_byte(visual_lines, cursor)
 			cur_vl   := visual_lines[cur_line]
 			col_x, _ := measure_text(ctx.renderer,
-				new_value[cur_vl.start:cursor], fs)
+				new_value[cur_vl.start:cursor], fs, font)
 
 			target := cur_line
 			if .Up   in keys { target -= 1 }
@@ -4304,7 +4307,7 @@ _text_input_impl :: proc(
 			if target != cur_line {
 				vl := visual_lines[target]
 				col := byte_index_at_x(ctx.renderer,
-					new_value[vl.start:vl.end], fs, 0, col_x)
+					new_value[vl.start:vl.end], fs, font, col_x)
 				cursor = vl.start + col
 			} else if .Up in keys {
 				// At the first line with Up: match the native "snap to
@@ -4439,6 +4442,7 @@ _text_input_impl :: proc(
 		radius            = th.radius.sm,
 		padding           = pad,
 		font_size         = fs,
+		font              = font,
 		width             = width,
 		height            = h,
 		focused           = focused,
@@ -4513,6 +4517,7 @@ text_input_simple :: proc(
 	width:       f32    = 0,
 	height:      f32    = 0,
 	font_size:   f32    = 0,
+	font:        Font   = 0,
 	padding:     [2]f32 = {0, 0},
 	bg:          Color  = {},
 	fg:          Color  = {},
@@ -4534,6 +4539,7 @@ text_input_simple :: proc(
 		width         = width,
 		height        = height,
 		font_size     = font_size,
+		font          = font,
 		padding       = padding,
 		bg            = bg,
 		fg            = fg,
@@ -4568,6 +4574,7 @@ text_input_payload :: proc(
 	width:       f32    = 0,
 	height:      f32    = 0,
 	font_size:   f32    = 0,
+	font:        Font   = 0,
 	padding:     [2]f32 = {0, 0},
 	bg:          Color  = {},
 	fg:          Color  = {},
@@ -4589,6 +4596,7 @@ text_input_payload :: proc(
 		width         = width,
 		height        = height,
 		font_size     = font_size,
+		font          = font,
 		padding       = padding,
 		bg            = bg,
 		fg            = fg,
@@ -4894,7 +4902,7 @@ Visual_Line :: struct {
 // wrap fallback is skipped and we behave as if wrap were off.
 @(private)
 build_visual_lines :: proc(
-	r: ^Renderer, text: string, fs, inner_w: f32, wrap: bool,
+	r: ^Renderer, text: string, fs, inner_w: f32, wrap: bool, font: Font = 0,
 ) -> []Visual_Line {
 	out := make([dynamic]Visual_Line, 0, 16, context.temp_allocator)
 
@@ -4925,7 +4933,7 @@ build_visual_lines :: proc(
 					if rune_bytes <= 0 { rune_bytes = 1 }
 					next := j + rune_bytes
 					if next > le { next = le }
-					w, _ := measure_text(r, text[pos:next], fs)
+					w, _ := measure_text(r, text[pos:next], fs, font)
 					if w > inner_w && next > pos + 1 {
 						fits_all = false
 						break

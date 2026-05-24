@@ -620,6 +620,7 @@ hyperlink-styled actions, etc.
 ```odin
 text_input(ctx, value: string, on_change: proc(new: string) -> Msg,
            placeholder = "", width = 0, height = 0,
+           font_size = 0, font = 0,
            disabled = false, multiline = false, wrap = false,
            password = false,
            clear_button = false, escape_clears = false,
@@ -630,6 +631,12 @@ Editable text field. Single-line by default; set `multiline = true`
 for a text area (and `wrap = true` if you want soft-wrap). Built-in:
 selection, clipboard (Ctrl+C/X/V), Ctrl-A select all, undo/redo
 (Ctrl+Z/Y), cursor navigation, IME.
+
+`font` is a `Font` handle from `font_load` (`0` = the default Inter).
+The font threads through measurement, caret positioning, wrap, and
+hit-testing — useful for a code/prose editor that wants a custom
+typeface (e.g. Iosevka) without swapping the renderer's global
+default.
 
 `password = true` masks input and suppresses copy/cut. `clear_button =
 true` adds a `×` button at the right edge that clears the value when

@@ -8,6 +8,14 @@ bug fixes bump the patch.
 
 ### Added
 
+- **`font` parameter on `text_input`.** Editable fields can now use a
+  custom typeface (a `Font` handle from `font_load`) instead of only
+  the renderer's global default — useful for code / prose editors
+  wanting Iosevka etc. Threads through measurement, caret positioning,
+  wrap, and hit-testing, so editing stays correct under the custom
+  font's metrics. Defaults to `0` (Inter), so existing call sites are
+  unchanged.
+
 - **Audio capture + playback (`skald/audio.odin`).** Microphone
   recording and PCM playback via SDL3 — no new C dependency.
   `audio_capture_open` / `_read` pull f32 PCM from a mic;
