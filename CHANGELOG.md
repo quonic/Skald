@@ -4,6 +4,19 @@ Skald follows [semantic versioning](https://semver.org) on a best-effort
 basis: breaking changes bump the major, new features bump the minor,
 bug fixes bump the patch.
 
+## Unreleased
+
+### Fixed
+
+- **Modal & popover click-through.** Interactive widgets behind a modal
+  dialog or under an open popover (select / picker / menu) could still
+  receive clicks when their rect fell inside the card/popover footprint —
+  the scrim didn't really block them. Every click/press gate now uses the
+  z-aware `widget_hovered` (button, checkbox, radio, toggle, slider, link,
+  the picker triggers incl. emoji, table rows, context_menu,
+  right_click_zone, split divider, …), and `widget_hovered`'s popover-bleed
+  guard is z-aware too. Reported from the nostr messenger.
+
 ## 1.0.0-rc9 — 2026-05-25
 
 Two memory-leak fixes — the per-call `cmd_thread` arena leak and

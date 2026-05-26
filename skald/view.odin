@@ -954,7 +954,7 @@ text_selectable :: proc(
 	if st.cursor_pos       > n { st.cursor_pos       = n }
 	if st.selection_anchor > n { st.selection_anchor = n }
 
-	hovered := rect_hovered(ctx, st.last_rect)
+	hovered := widget_hovered(ctx, wid)
 
 	// Mouse press inside our rect → start selection at click position.
 	// Click streak (1/2/3+) drives the action: single = caret, double =
@@ -1263,7 +1263,7 @@ rich_text_selectable :: proc(
 	resolved_size := size if size > 0 else 14
 	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
 
-	hovered := rect_hovered(ctx, st.last_rect)
+	hovered := widget_hovered(ctx, wid)
 
 	if hovered && ctx.input.mouse_pressed[.Left] {
 		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
@@ -1384,7 +1384,7 @@ rich_text_selectable_links :: proc(
 	resolved_size := size if size > 0 else 14
 	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
 
-	hovered := rect_hovered(ctx, st.last_rect)
+	hovered := widget_hovered(ctx, wid)
 
 	// Drag threshold for press-vs-drag-vs-link detection. Manhattan
 	// distance — well below where a deliberate drag-to-select would
@@ -2181,7 +2181,7 @@ chip :: proc(
 	// than a chip row).
 	close_id := widget_resolve_id(ctx, id)
 	close_st := widget_get(ctx, close_id, .Click_Zone)
-	close_hot := rect_contains_point(close_st.last_rect, ctx.input.mouse_pos)
+	close_hot := widget_hovered(ctx, close_id)
 	if ctx.input.mouse_released[.Left] && close_hot {
 		send(ctx, on_close(label))
 	}
@@ -2347,7 +2347,7 @@ _rating_impl :: proc(
 		slot_id := widget_make_sub_id(base, u64(i + 1))
 		st := widget_get(ctx, slot_id, .Click_Zone)
 		if ctx.input.mouse_pressed[.Left] &&
-		   rect_hovered(ctx, st.last_rect) {
+		   widget_hovered(ctx, slot_id) {
 			// Clicking the currently-filled last star clears; any
 			// other click sets to that slot (1-based).
 			next := i + 1
@@ -2968,7 +2968,7 @@ collapsible :: proc(
 	widget_make_focusable(ctx, id)
 	st := widget_get(ctx, id, .Click_Zone)
 	focused := widget_has_focus(ctx, id)
-	hovered := rect_hovered(ctx, st.last_rect)
+	hovered := widget_hovered(ctx, id)
 
 	toggled := false
 	if ctx.input.mouse_pressed[.Left] && hovered {
@@ -3079,7 +3079,7 @@ accordion :: proc(
 		widget_make_focusable(ctx, zone_id)
 		st := widget_get(ctx, zone_id, .Click_Zone)
 		focused := widget_has_focus(ctx, zone_id)
-		hovered := rect_hovered(ctx, st.last_rect)
+		hovered := widget_hovered(ctx, zone_id)
 
 		toggled := false
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -3560,7 +3560,7 @@ button :: proc(
 	st := widget_get(ctx, id, .Button)
 	focused := !disabled && widget_has_focus(ctx, id)
 
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	if !disabled {
 		// Press/release state machine:
@@ -3819,7 +3819,7 @@ _text_input_impl :: proc(
 	// Everything past the trigger press happens against `st.last_rect`,
 	// so a field that mounted this frame still takes its first click —
 	// the rect is zero, hit-test fails, we fall through.
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	// Search-mode embedded clear: reserve a column in the right padding
 	// for a `×` glyph. A press landing there empties the value outright
@@ -5165,7 +5165,7 @@ _checkbox_impl :: proc(
 	if !disabled { widget_make_focusable(ctx, id) }
 	st := widget_get(ctx, id, .Checkbox)
 	focused := !disabled && widget_has_focus(ctx, id)
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -5305,7 +5305,7 @@ _radio_impl :: proc(
 	if !disabled { widget_make_focusable(ctx, id) }
 	st := widget_get(ctx, id, .Radio)
 	focused := !disabled && widget_has_focus(ctx, id)
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -5523,7 +5523,7 @@ radio_group_option :: proc(
 	if !disabled { widget_make_focusable(ctx, opt_id) }
 	st := widget_get(ctx, opt_id, .Radio)
 	focused := !disabled && widget_has_focus(ctx, opt_id)
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, opt_id)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -5653,7 +5653,7 @@ _toggle_impl :: proc(
 	if !disabled { widget_make_focusable(ctx, id) }
 	st := widget_get(ctx, id, .Toggle)
 	focused := !disabled && widget_has_focus(ctx, id)
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -5779,7 +5779,7 @@ _slider_impl :: proc(
 	if !disabled { widget_make_focusable(ctx, id) }
 	st := widget_get(ctx, id, .Slider)
 	focused := !disabled && widget_has_focus(ctx, id)
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	// Start a drag on press-inside; hold it regardless of hover until the
 	// button is released. Mirrors how every OS-level slider behaves so
@@ -6046,7 +6046,7 @@ _select_impl :: proc(
 	}
 
 	trigger_rect := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	// Predict the overlay rect so outside-click dismiss has something
 	// to hit-test. Option rows are button-sized and sit flush against
@@ -6418,7 +6418,7 @@ _combobox_impl :: proc(
 
 	// Popover geometry (capped at 8 rows for reasonable height).
 	trigger_rect    := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	fs    := th.font.size_md
 	pad_x := th.spacing.md
@@ -7130,7 +7130,7 @@ _date_picker_impl :: proc(
 	}
 
 	trigger_rect := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	// Wall-clock today, used for the "today" highlight and as the seed
 	// month when no value / last-viewed month is set.
@@ -7862,7 +7862,7 @@ _time_picker_impl :: proc(
 	display := format(value) if format != nil else time_format(value)
 
 	trigger_rect := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	// Popover is paginated like the date picker: one grid at a time,
 	// with `< Hour >` / `< Minute >` / `< Second >` in the header to
@@ -8381,7 +8381,7 @@ _color_picker_impl :: proc(
 	}
 
 	trigger_rect    := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	// Popover geometry. The SV square is square-ish (square at 220×160 here
 	// which is close enough; shortens vertical so hex+hue fit in one card).
@@ -9045,7 +9045,7 @@ right_click_zone :: proc(
 	st := widget_get(ctx, id, .Click_Zone)
 
 	if ctx.input.mouse_pressed[.Right] &&
-	   rect_contains_point(st.last_rect, ctx.input.mouse_pos) {
+	   widget_hovered(ctx, id) {
 		send(ctx, on_right_click)
 	}
 
@@ -9101,7 +9101,7 @@ context_menu :: proc(
 	// Open on right-click inside the child's last-frame rect. Anchor the
 	// popover at the cursor position so the menu reads as "attached to
 	// what I just clicked," matching native context-menu behaviour.
-	child_hovered := rect_hovered(ctx, st.last_rect)
+	child_hovered := widget_hovered(ctx, id)
 	if ctx.input.mouse_pressed[.Right] && child_hovered {
 		st.open       = true
 		st.anchor_pos = ctx.input.mouse_pos
@@ -9599,7 +9599,11 @@ split :: proc(
 		div_rect = Rect{cont.x, cont.y + first_size, cont.w, divider_thickness}
 	}
 
-	hover := rect_contains_point(div_rect, ctx.input.mouse_pos)
+	// `div_rect` ⊂ the split's container rect (cont = st.last_rect), so
+	// `widget_hovered(ctx, id)` supplies the z-gate (blocked behind a modal
+	// or open popover) for the divider too — without it a background split's
+	// divider stays draggable through a dialog scrim.
+	hover := rect_contains_point(div_rect, ctx.input.mouse_pos) && widget_hovered(ctx, id)
 
 	// Latch the drag on press-inside-divider. `drag_anchor` stores the
 	// grab offset `mouse − first_size` so the divider tracks the cursor
@@ -9907,7 +9911,7 @@ _number_input_impl :: proc(
 	// previous frame — the renderer stamps it via View_Text_Input. Caret
 	// placement happens after the draft is seeded so hit-testing runs
 	// against the string that will actually render.
-	mouse_in := !non_interactive && rect_hovered(ctx, st.last_rect)
+	mouse_in := !non_interactive && widget_hovered(ctx, base)
 	if !non_interactive && ctx.input.mouse_pressed[.Left] {
 		if mouse_in {
 			if !focused {
@@ -10170,7 +10174,7 @@ link :: proc(
 	st := widget_get(ctx, id, .Link)
 	focused := !disabled && widget_has_focus(ctx, id)
 
-	hovered := !disabled && rect_hovered(ctx, st.last_rect)
+	hovered := !disabled && widget_hovered(ctx, id)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -11623,7 +11627,7 @@ table :: proc(
 			sort_id := widget_auto_id(ctx)
 			sort_st := widget_get(ctx, sort_id, .Click_Zone)
 			if ctx.input.mouse_pressed[.Left] &&
-			   rect_hovered(ctx, sort_st.last_rect) {
+			   widget_hovered(ctx, sort_id) {
 				new_asc := true
 				if sort_column == i { new_asc = !sort_ascending }
 				send(ctx, on_sort_change(i, new_asc))
@@ -11667,7 +11671,7 @@ table :: proc(
 			// lock-in would miss the flex case on subsequent frames.
 			if !handle_st.pressed &&
 			   ctx.input.mouse_pressed[.Left] &&
-			   rect_hovered(ctx, handle_st.last_rect) {
+			   widget_hovered(ctx, handle_id) {
 				handle_st.pressed     = true
 				handle_st.drag_anchor = ctx.input.mouse_pos.x - widths[i]
 
@@ -11730,7 +11734,7 @@ table :: proc(
 			// color to primary so the user sees what they're about to
 			// drag; active drag stays primary for the whole gesture.
 			divider_color := th.color.fg_muted
-			handle_hover := rect_hovered(ctx, handle_st.last_rect)
+			handle_hover := widget_hovered(ctx, handle_id)
 			if handle_hover || handle_st.pressed {
 				divider_color = th.color.primary
 			}
@@ -11965,7 +11969,7 @@ table :: proc(
 			row_id := widget_auto_id(ctx)
 			row_st := widget_get(ctx, row_id, .Click_Zone)
 			if ctx.input.mouse_pressed[.Left] &&
-			   rect_hovered(ctx, row_st.last_rect) {
+			   widget_hovered(ctx, row_id) {
 				send(ctx, on_row_click(i, ctx.input.modifiers))
 				// Clicking a row moves keyboard focus to the table
 				// so arrow keys Just Work without an extra Tab.

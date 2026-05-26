@@ -117,7 +117,7 @@ _emoji_picker_impl :: proc(
 	}
 
 	trigger_rect    := st.last_rect
-	trigger_hovered := !disabled && rect_hovered(ctx, trigger_rect)
+	trigger_hovered := !disabled && widget_hovered(ctx, id)
 
 	// Clear search draft on close so each open starts fresh.
 	if !st.open && len(st.text_buffer) > 0 {

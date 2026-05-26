@@ -1075,27 +1075,31 @@ widget_hovered :: proc(ctx: ^Ctx($Msg), id: Widget_ID) -> bool {
 	if !ok { return false }
 	if !rect_contains_point(st.last_rect, ctx.input.mouse_pos) { return false }
 
-	// Modal trap: when a modal dialog was open last frame, only widgets
-	// whose `widget_record_rect` ran while the renderer was inside an
-	// overlay subtree are eligible. That set includes the dialog's own
-	// content widgets AND any popovers spawned from the dialog (select
-	// dropdowns, pickers, menus) — both render through `render_overlays`,
-	// which brackets the depth counter. Widgets in the main view tree
-	// don't stamp `last_overlay_frame` at all, so they're z-blocked even
-	// if their `last_rect` happens to overlap the modal card position.
-	mr := ctx.widgets.modal_rect_prev
-	if mr.w > 0 && mr.h > 0 {
-		prev_frame := ctx.widgets.frame - 1
-		if st.last_overlay_frame != prev_frame { return false }
-	}
+	// `stamped` is true when this widget rendered inside an overlay subtree
+	// last frame (dialog content, or a popover spawned from one). It's the
+	// z-signal geometry can't give: it distinguishes a popover's own child
+	// from a main-tree widget whose rect merely overlaps the popover.
+	prev_frame := ctx.widgets.frame - 1
+	stamped    := st.last_overlay_frame == prev_frame
 
-	// Same popover-bleed gate `rect_hovered` applies: if the mouse is
-	// over an overlay rect that doesn't fully contain this widget, the
-	// overlay is in front, suppress hover.
+	// Modal trap: when a modal dialog was open last frame, only overlay-
+	// stamped widgets (the dialog's content + popovers spawned from it) are
+	// eligible. Main-tree widgets are z-blocked even if their rect overlaps
+	// the card.
+	mr := ctx.widgets.modal_rect_prev
+	if mr.w > 0 && mr.h > 0 && !stamped { return false }
+
+	// Popover bleed: if the mouse is over an open overlay (select / picker /
+	// menu / context-menu popover), a main-tree widget behind it is z-blocked
+	// — geometric containment alone can't tell a popover's own child from a
+	// background widget that happens to sit inside the popover's rect (a small
+	// button under a calendar grid was the smoking gun). An overlay-stamped
+	// widget is suppressed only by a *different* overlay in front of it (one
+	// that doesn't contain it).
 	for rr in ctx.widgets.overlay_rects_prev {
-		if rect_contains_point(rr, ctx.input.mouse_pos) &&
-		   !rect_contains_rect(rr, st.last_rect) {
-			return false
+		if rect_contains_point(rr, ctx.input.mouse_pos) {
+			if !stamped { return false }
+			if !rect_contains_rect(rr, st.last_rect) { return false }
 		}
 	}
 	return true

@@ -421,7 +421,7 @@ append_palette_row :: proc(
 	if !disabled {
 		zone_id := widget_make_sub_id(id_scope, u64(row_index + 1))
 		zst := widget_get(ctx, zone_id, .Click_Zone)
-		if rect_hovered(ctx, zst.last_rect) && ctx.input.mouse_pressed[.Left] {
+		if widget_hovered(ctx, zone_id) && ctx.input.mouse_pressed[.Left] {
 			send(ctx, msg)
 			send(ctx, on_dismiss())
 		}
