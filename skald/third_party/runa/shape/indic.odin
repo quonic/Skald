@@ -376,6 +376,12 @@ reorder_reph :: proc(gids: ^[dynamic]parse.Glyph_ID, clusters: ^[dynamic]u32, ru
 	lo := syl.lo
 	base := syl.base_idx
 	if base <= lo + 1 { return }                        // base is the reph itself somehow
+	// SKALD PATCH (security/DoS): a reph with no base consonant after it
+	// (e.g. a cluster ending in RA+Virama, "र्") leaves base_idx == len, so
+	// gids[base] / the shift loop below read out of bounds → panic. Nothing
+	// to reorder around in that case — bail. Report upstream; drop on
+	// re-vendor. Repro: runa_fuzz cp 0930 094D
+	if base >= len(gids) { return }
 
 	ra_g  := gids[lo]
 	hal_g := gids[lo + 1]

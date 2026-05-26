@@ -8,6 +8,14 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **Text-engine hardening (runa).** Fixed two issues found by fuzzing the
+  bundled text engine under AddressSanitizer/MemorySanitizer: (1) a
+  Devanagari cluster ending in RA + Virama (e.g. `र`+`्`) read out of bounds
+  in the reph reorder and crashed — trivially triggerable from untrusted
+  text; (2) glyph-bitmap allocation was unbounded, so a pathological size or
+  a malicious font's absurd glyph bbox could force an enormous allocation.
+  Both are now guarded. (Upstream runa 1.2.1.)
+
 - **Long unbreakable tokens wrap instead of overflowing.** A single
   spaceless token (URL, hash, base64) wider than `max_width` used to
   overflow and push its container off-screen. `wrap_text` and
