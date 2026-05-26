@@ -8,6 +8,13 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **Long unbreakable tokens wrap instead of overflowing.** A single
+  spaceless token (URL, hash, base64) wider than `max_width` used to
+  overflow and push its container off-screen. `wrap_text` and
+  `wrap_rich_text` now hard-break it at the widest fitting rune boundary
+  (CSS `overflow-wrap: anywhere`) — automatic for any `max_width > 0`,
+  no-wrap (`max_width = 0`) unchanged.
+
 - **Modal & popover click-through.** Interactive widgets behind a modal
   dialog or under an open popover (select / picker / menu) could still
   receive clicks when their rect fell inside the card/popover footprint —
@@ -15,7 +22,7 @@ bug fixes bump the patch.
   z-aware `widget_hovered` (button, checkbox, radio, toggle, slider, link,
   the picker triggers incl. emoji, table rows, context_menu,
   right_click_zone, split divider, …), and `widget_hovered`'s popover-bleed
-  guard is z-aware too. Reported from the nostr messenger.
+  guard is z-aware too.
 
 ## 1.0.0-rc9 — 2026-05-25
 
