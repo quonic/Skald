@@ -114,13 +114,14 @@ and you want state to follow the *item*, not the row position. See
 that belonged to a different widget in the same slot — a dropdown that
 lost its slot to a button won't have its `open=true` leak into the button.
 
-Hover detection uses `rect_hovered(ctx, rect)` instead of a raw
-rect-contains-point check. The wrapped version consults the previous
-frame's stamped popover rects and returns false when the mouse is over
-an overlay that doesn't fully cover this widget — so hover tints on
-buttons, inputs, etc. don't bleed through an open dropdown sitting on
-top of them. Widgets inside the popover (options, date cells) stay
-hoverable because their rect is fully contained by the overlay.
+Two hit-test helpers, split by purpose. `rect_hovered(ctx, rect)` is the
+*visual* check — hover tints, tooltips. `widget_hovered(ctx, id)` is the
+*input* gate every interactive builder uses for clicks and presses: it reads
+a per-widget overlay-layer stamp, so a main-tree widget is z-blocked when a
+modal or popover sits in front of it — even if its rect falls inside the
+dialog card or popover (geometry alone can't tell a popover's own child from
+a background widget behind it). Use `widget_hovered` to gate clicks in a
+custom widget; reserve `rect_hovered` for visual hover.
 
 ## Theming
 
