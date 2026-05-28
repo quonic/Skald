@@ -237,6 +237,31 @@ Text_Span :: struct {
 	link:      string,
 }
 
+// Mark_Style is how a Text_Mark decorates its byte range. Additive: new
+// styles (dotted underline for warnings, an outline box, …) can be added
+// without breaking callers, since `marks` defaults to nil.
+Mark_Style :: enum u8 {
+	Squiggle,  // wavy underline — the spell-check convention
+	Underline, // straight underline
+	Highlight, // translucent fill behind the glyphs
+}
+
+// Text_Mark decorates `value[start:end)` in a `text_input` without
+// affecting layout, the caret, selection, or the edit buffer — purely
+// visual, supplied fresh each frame (immediate mode). Byte offsets are
+// clamped to the buffer; ranges that wrap across visual lines draw one
+// segment per line. A zero `color` ({}) means the theme default: `danger`
+// for Squiggle / Underline, a translucent `primary` for Highlight.
+//
+// Drives spell-check squiggles, search / find-in-page highlights, and
+// (with text_input_offset_at / _offset_rect) editor diagnostics.
+Text_Mark :: struct {
+	start: int,
+	end:   int,
+	style: Mark_Style,
+	color: Color,
+}
+
 // View_Rich_Text carries a list of spans plus the paragraph-level
 // defaults that fill in their inheritances, and the pre-computed
 // visual lines `wrap_rich_text` produced during the view build.
@@ -397,6 +422,10 @@ View_Text_Input :: struct {
 	// the render pass immediately following the view build. Nil / empty on
 	// single-line fields.
 	visual_lines:      []Visual_Line,
+	// marks decorate caller-supplied byte ranges (spell-check squiggles,
+	// search highlights, …). Copied into the frame arena by the builder
+	// with colours already resolved to concrete values. Nil = no marks.
+	marks:             []Text_Mark,
 	// invalid flips the field into error state: a persistent border in
 	// `color_border` (which the builder has already set to the danger
 	// accent) regardless of focus. The builder may also pair this with
@@ -3720,6 +3749,10 @@ _text_input_impl :: proc(
 	// unaffected. Apps use this instead of re-implementing the cap in
 	// their on_change handler.
 	max_chars:    int    = 0,
+	// marks decorate caller-supplied byte ranges in `value` (spell-check
+	// squiggles, search highlights). nil = no decorations, byte-identical
+	// to a field without the param. See Text_Mark.
+	marks:        []Text_Mark = nil,
 ) -> (view: View, new_value: string, changed: bool) {
 	th := ctx.theme
 
@@ -4416,6 +4449,19 @@ _text_input_impl :: proc(
 
 	st.cursor_pos       = cursor
 	st.selection_anchor = anchor
+
+	// Frame-scoped geometry snapshot for text_input_offset_at / _rect.
+	// `new_value` lives in the frame arena (or is the caller's value), so
+	// these are only valid for queries made during this frame's update;
+	// the accessors gate on last_frame. Real (unmasked) text so offsets
+	// map to byte positions in `value`.
+	st.tg_text      = new_value
+	st.tg_fs        = fs
+	st.tg_font      = font
+	st.tg_pad       = pad
+	st.tg_line_h    = line_h
+	st.tg_multiline = multiline
+
 	widget_set(ctx, id, st)
 
 	// Edit dispatch is handled by the proc-group wrappers — they consume
@@ -4441,6 +4487,30 @@ _text_input_impl :: proc(
 		out_vls = []Visual_Line{
 			Visual_Line{start = 0, end = len(out_text), consume_space = false},
 		}
+	}
+
+	// Copy marks into the frame arena (the caller's slice may be a stack
+	// temporary — see the view-slice-lifetime rule) and resolve each {}
+	// colour to its theme default by style. Skipped for password fields,
+	// where the displayed bullets don't line up with real byte offsets.
+	out_marks: []Text_Mark = nil
+	if len(marks) > 0 && !password {
+		cp := make([]Text_Mark, len(marks), context.temp_allocator)
+		for m, k in marks {
+			mm := m
+			if mm.color.a == 0 {
+				switch mm.style {
+				case .Squiggle, .Underline:
+					mm.color = th.color.danger
+				case .Highlight:
+					hl := th.color.primary
+					hl.a = 0.25
+					mm.color = hl
+				}
+			}
+			cp[k] = mm
+		}
+		out_marks = cp
 	}
 
 	field := View_Text_Input{
@@ -4469,6 +4539,7 @@ _text_input_impl :: proc(
 		scroll_y          = st.scroll_y,
 		content_h         = content_h,
 		visual_lines      = out_vls,
+		marks             = out_marks,
 		invalid           = invalid,
 		sb_hover          = sb_hover,
 		sb_dragging       = st.pressed,
@@ -4548,6 +4619,7 @@ text_input_simple :: proc(
 	invalid:      bool   = false,
 	error:        string = "",
 	max_chars:    int    = 0,
+	marks:        []Text_Mark = nil,
 ) -> View {
 	view, new_value, changed := _text_input_impl(
 		ctx, value,
@@ -4570,6 +4642,7 @@ text_input_simple :: proc(
 		invalid       = invalid,
 		error         = error,
 		max_chars     = max_chars,
+		marks         = marks,
 	)
 	if changed { send(ctx, on_change(new_value)) }
 	return view
@@ -4605,6 +4678,7 @@ text_input_payload :: proc(
 	invalid:      bool   = false,
 	error:        string = "",
 	max_chars:    int    = 0,
+	marks:        []Text_Mark = nil,
 ) -> View {
 	view, new_value, changed := _text_input_impl(
 		ctx, value,
@@ -4627,9 +4701,85 @@ text_input_payload :: proc(
 		invalid       = invalid,
 		error         = error,
 		max_chars     = max_chars,
+		marks         = marks,
 	)
 	if changed { send(ctx, on_change(payload, new_value)) }
 	return view
+}
+
+// text_input_offset_rect returns the screen-space rect of byte `offset`
+// in the text_input identified by `id`: a zero-width caret-like rect
+// (x, line-top, 0, line-height). Use it to anchor a popover under a word,
+// place an inline annotation, draw an LSP diagnostic marker, etc.
+//
+// Call it from `update` while reacting to input (a click Msg): the loop is
+// view -> render -> update, so the field's geometry from THIS frame is
+// live (the wrap table, scroll, and rect are all current). Returns
+// ok=false if `id` isn't a text_input that rendered this frame, or if
+// there's no renderer. `offset` is clamped to the buffer.
+text_input_offset_rect :: proc(ctx: ^Ctx($Msg), id: Widget_ID, offset: int) -> (rect: Rect, ok: bool) {
+	st, exists := ctx.widgets.states[id]
+	if !exists || st.kind != .Text_Input { return {}, false }
+	if st.last_frame + 1 < ctx.widgets.frame { return {}, false } // stale geometry
+	r := ctx.renderer
+	if r == nil { return {}, false }
+
+	text := st.tg_text
+	off  := clamp(offset, 0, len(text))
+	ix   := st.last_rect.x + st.tg_pad.x
+	iy   := st.last_rect.y + st.tg_pad.y
+	lh   := st.tg_line_h
+
+	if st.tg_multiline {
+		if st.vline_cache == nil || len(st.vline_cache.lines) == 0 { return {}, false }
+		vls := st.vline_cache.lines[:]
+		li  := visual_line_of_byte(vls, off)
+		vl  := vls[li]
+		x: f32 = 0
+		if off > vl.start { x, _ = measure_text(r, text[vl.start:off], st.tg_fs, st.tg_font) }
+		line_y := iy - st.scroll_y + f32(li) * lh
+		return Rect{ix + x, line_y, 0, lh}, true
+	}
+
+	// Single-line: vertically centred, no horizontal scroll.
+	x: f32 = 0
+	if off > 0 { x, _ = measure_text(r, text[:off], st.tg_fs, st.tg_font) }
+	ty := iy + (st.last_rect.h - 2 * st.tg_pad.y - lh) / 2
+	return Rect{ix + x, ty, 0, lh}, true
+}
+
+// text_input_offset_at maps a screen point to the nearest byte offset in
+// the field — the inverse of text_input_offset_rect, and the same
+// call-from-update contract. Use it to resolve which word/character a
+// (right-)click landed on without disturbing the caret. Returns ok=false
+// if `id` isn't a text_input that rendered this frame.
+text_input_offset_at :: proc(ctx: ^Ctx($Msg), id: Widget_ID, pos: [2]f32) -> (offset: int, ok: bool) {
+	st, exists := ctx.widgets.states[id]
+	if !exists || st.kind != .Text_Input { return 0, false }
+	if st.last_frame + 1 < ctx.widgets.frame { return 0, false }
+	r := ctx.renderer
+	if r == nil { return 0, false }
+
+	text  := st.tg_text
+	ix    := st.last_rect.x + st.tg_pad.x
+	iy    := st.last_rect.y + st.tg_pad.y
+	lh    := st.tg_line_h
+	rel_x := pos.x - ix
+
+	if st.tg_multiline {
+		if st.vline_cache == nil || len(st.vline_cache.lines) == 0 { return 0, false }
+		vls := st.vline_cache.lines[:]
+		ry  := pos.y - (iy - st.scroll_y)
+		li  := int(ry / lh)
+		if li < 0 { li = 0 }
+		if li > len(vls) - 1 { li = len(vls) - 1 }
+		vl  := vls[li]
+		col := byte_index_at_x(r, text[vl.start:vl.end], st.tg_fs, st.tg_font, rel_x)
+		return vl.start + col, true
+	}
+
+	col := byte_index_at_x(r, text, st.tg_fs, st.tg_font, rel_x)
+	return col, true
 }
 
 // search_field is the dedicated search-input widget: a `text_input`

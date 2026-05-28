@@ -624,7 +624,8 @@ text_input(ctx, value: string, on_change: proc(new: string) -> Msg,
            disabled = false, multiline = false, wrap = false,
            password = false,
            clear_button = false, escape_clears = false,
-           invalid = false, error = "", max_chars = 0)
+           invalid = false, error = "", max_chars = 0,
+           marks: []Text_Mark = nil)
 ```
 
 Editable text field. Single-line by default; set `multiline = true`
@@ -652,6 +653,27 @@ callback, use `search_field` — it sets `clear_button` and
 
 `on_change` is called with the new value on every edit — you clone
 the string onto state if you want to keep it (see `gotchas.md`).
+
+`marks` decorates byte ranges without touching the buffer, caret, or
+layout — `Text_Mark{start, end, style, color}` with `style` one of
+`.Squiggle` (spell-check), `.Underline`, or `.Highlight`. `{}` colour =
+theme default (`danger` for squiggle/underline, translucent `primary`
+for highlight). Supply marks fresh each frame; `nil` is a no-op. To
+react to a click on a mark, map screen↔byte with the accessors below.
+
+```odin
+// Call from `update` reacting to a click Msg (view→render→update keeps
+// this frame's geometry live). Both return ok=false if `id` isn't a
+// text_input that rendered this frame.
+text_input_offset_at   :: proc(ctx, id: Widget_ID, pos: [2]f32) -> (offset: int, ok: bool)
+text_input_offset_rect :: proc(ctx, id: Widget_ID, offset: int)  -> (rect: Rect, ok: bool)
+```
+
+`offset_at` resolves which byte a point landed on (without moving the
+caret); `offset_rect` gives the screen rect of a byte (a zero-width
+caret-like rect) to anchor a popover under a word. Spell-check uses
+both — squiggle via `marks`, fix-menu anchor via `offset_rect` — and
+the same pair backs editor diagnostics, go-to, and inline annotations.
 
 **Examples: `examples/08_text_input`, `examples/18_forms`.**
 

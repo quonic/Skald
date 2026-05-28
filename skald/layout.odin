@@ -314,6 +314,58 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 	return {0, 0}
 }
 
+// draw_squiggle paints a thin wavy underline from (x, y) spanning `w` px,
+// the spell-check convention, built from the existing stroke-ribbon
+// primitive. `y` is the vertical centre of the wave.
+@(private)
+draw_squiggle :: proc(r: ^Renderer, x, y, w: f32, color: Color) {
+	if w <= 1 { return }
+	period: f32 = 4   // px per zig
+	amp:    f32 = 1.5 // swing above / below centre
+	pts: [dynamic]Stroke_Sample
+	pts.allocator = context.temp_allocator
+	px := x
+	up := true
+	for px < x + w {
+		append(&pts, Stroke_Sample{pos = {px, y + (up ? -amp : amp)}, pressure = 1})
+		up = !up
+		px += period
+	}
+	append(&pts, Stroke_Sample{pos = {x + w, y + (up ? -amp : amp)}, pressure = 1})
+	draw_stroke(r, pts[:], 1.2, color)
+}
+
+// draw_input_marks paints every Text_Mark intersecting the byte range
+// [seg_start, seg_end) of one visual line, reusing the per-line geometry
+// the selection highlight uses. `top` is the line's top y; glyphs sit at
+// `top + ascent`. Marks carry pre-resolved colours (builder fills {}).
+@(private)
+draw_input_marks :: proc(
+	r: ^Renderer, marks: []Text_Mark, text: string,
+	seg_start, seg_end: int, ix, top, lh, ascent, fs: f32, font: Font,
+) {
+	for m in marks {
+		if m.end <= m.start { continue }
+		lo := max(m.start, seg_start)
+		hi := min(m.end,   seg_end)
+		if hi <= lo { continue }
+		lo = clamp(lo, 0, len(text))
+		hi = clamp(hi, 0, len(text))
+		if hi <= lo { continue }
+		x_lo: f32 = 0
+		if lo > seg_start { x_lo, _ = measure_text(r, text[seg_start:lo], fs, font) }
+		x_hi, _ := measure_text(r, text[seg_start:hi], fs, font)
+		switch m.style {
+		case .Highlight:
+			draw_rect(r, {ix + x_lo, top, x_hi - x_lo, lh}, m.color, 0)
+		case .Underline:
+			draw_rect(r, {ix + x_lo, top + ascent + 1.5, x_hi - x_lo, 1.5}, m.color, 0)
+		case .Squiggle:
+			draw_squiggle(r, ix + x_lo, top + ascent + 2.5, x_hi - x_lo, m.color)
+		}
+	}
+}
+
 // render_view walks `v` and emits draw calls. `origin` is the top-left
 // corner in window pixels; `size` is the assigned size handed down by the
 // parent (equals the view's intrinsic size for leaf nodes inside a
@@ -640,6 +692,13 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 					vv.color_selection, 0)
 			}
 
+			// Marks sit under / behind the glyphs (decorations don't gate
+			// on focus the way the selection does).
+			if len(vv.marks) > 0 {
+				draw_input_marks(r, vv.marks, vv.text, 0, len(vv.text),
+					ix, ty, lh, ascent, vv.font_size, vv.font)
+			}
+
 			if len(display) > 0 {
 				draw_text(r, display, ix, ty + ascent, display_col, vv.font_size, vv.font)
 			}
@@ -732,6 +791,12 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 								{ix + x_lo, line_y, x_hi - x_lo, lh},
 								vv.color_selection, 0)
 						}
+					}
+
+					// Marks on this visual line, clipped to [i, j].
+					if len(vv.marks) > 0 {
+						draw_input_marks(r, vv.marks, vv.text, i, j,
+							ix, line_y, lh, ascent, vv.font_size, vv.font)
 					}
 
 					// Glyphs for this visual line. The slice excludes any

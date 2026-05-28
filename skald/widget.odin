@@ -251,6 +251,20 @@ Widget_State :: struct {
 	// destroyed. Nil for every non-multiline widget.
 	vline_cache: ^Visual_Line_Cache,
 
+	// tg_* is a frame-scoped geometry snapshot stamped by the text_input
+	// builder so `text_input_offset_at` / `text_input_offset_rect` can map
+	// screen<->byte without retaining glyph geometry. `tg_text` references
+	// the frame arena, so the accessors are only valid when called during
+	// the SAME frame's update pass (the loop is view->render->update, which
+	// keeps the arena alive); staleness is gated by `last_frame`. These are
+	// borrows, not owned — no cleanup needed.
+	tg_text:      string,
+	tg_fs:        f32,
+	tg_font:      Font,
+	tg_pad:       [2]f32,
+	tg_line_h:    f32,
+	tg_multiline: bool,
+
 	// last_overlay_frame is the most recent frame on which this widget's
 	// `widget_record_rect` ran while the renderer was inside an overlay
 	// subtree (a dialog card, a popover, a menu, a tooltip — anything

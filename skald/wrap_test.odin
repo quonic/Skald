@@ -261,3 +261,104 @@ visual_line_cache_behaviour :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(d), 2)
 	testing.expect_value(t, st.vline_cache.text_len, 3)
 }
+
+// --- text_input_offset_at / _offset_rect accessors ---
+
+@(test)
+offset_accessor_single_line_roundtrip :: proc(t: ^testing.T) {
+	r := runa_renderer()
+	defer free_runa_renderer(r)
+	if r.text.runa_state == nil { return }
+
+	Msg :: distinct int
+	store: Widget_Store
+	widget_store_init(&store)
+	defer widget_store_destroy(&store)
+	store.frame = 5
+
+	id   := Widget_ID(7)
+	text := "hello world example text"
+	fs:  f32 = 16
+	_, line_h := measure_text(r, "Ag", fs, 0)
+	store.states[id] = Widget_State{
+		kind         = .Text_Input,
+		last_frame   = store.frame,
+		last_rect    = {10, 20, 300, 40},
+		tg_text      = text,
+		tg_fs        = fs,
+		tg_pad       = {8, 8},
+		tg_line_h    = line_h,
+		tg_multiline = false,
+	}
+	input: Input
+	ctx := Ctx(Msg){widgets = &store, input = &input, renderer = r}
+
+	// A point at byte o's left edge maps back to o (no wrap, no scroll).
+	for off in ([]int{0, 3, 6, 11, 18, len(text)}) {
+		rect, ok := text_input_offset_rect(&ctx, id, off)
+		testing.expectf(t, ok, "offset_rect ok for off=%d", off)
+		off2, ok2 := text_input_offset_at(&ctx, id, {rect.x + 0.5, rect.y + line_h * 0.5})
+		testing.expect(t, ok2, "offset_at ok")
+		testing.expectf(t, off2 == off, "single-line roundtrip off=%d -> %d", off, off2)
+	}
+
+	// Monotonic: later offsets sit further right.
+	r1, _ := text_input_offset_rect(&ctx, id, 3)
+	r2, _ := text_input_offset_rect(&ctx, id, 9)
+	testing.expect(t, r2.x > r1.x, "offset_rect x should increase with offset")
+
+	// Stale geometry (widget didn't render recently) -> ok=false.
+	store.frame = 9
+	_, ok_stale := text_input_offset_rect(&ctx, id, 3)
+	testing.expect(t, !ok_stale, "stale geometry must return ok=false")
+}
+
+@(test)
+offset_accessor_multiline :: proc(t: ^testing.T) {
+	r := runa_renderer()
+	defer free_runa_renderer(r)
+	if r.text.runa_state == nil { return }
+
+	Msg :: distinct int
+	store: Widget_Store
+	widget_store_init(&store)
+	defer widget_store_destroy(&store) // frees vline_cache too
+
+	id      := Widget_ID(3)
+	text    := "first line here\nsecond line below"
+	fs:     f32 = 16
+	inner_w: f32 = 400
+	_, line_h := measure_text(r, "Ag", fs, 0)
+
+	vls := build_visual_lines(r, text, fs, inner_w, true, 0)
+	cache := new(Visual_Line_Cache)
+	cache.lines = make([dynamic]Visual_Line)
+	append(&cache.lines, ..vls)
+
+	store.states[id] = Widget_State{
+		kind         = .Text_Input,
+		last_frame   = store.frame,
+		last_rect    = {0, 0, inner_w + 16, 200},
+		tg_text      = text,
+		tg_fs        = fs,
+		tg_pad       = {8, 8},
+		tg_line_h    = line_h,
+		tg_multiline = true,
+		vline_cache  = cache,
+	}
+	input: Input
+	ctx := Ctx(Msg){widgets = &store, input = &input, renderer = r}
+
+	nl := 0 // byte index of the '\n'
+	for ch, i in text { if ch == '\n' { nl = i; break } }
+
+	r_first, ok1  := text_input_offset_rect(&ctx, id, 2)       // line 0
+	r_second, ok2 := text_input_offset_rect(&ctx, id, nl + 3)  // line 1
+	testing.expect(t, ok1 && ok2, "both offsets resolve")
+	testing.expect(t, r_second.y > r_first.y, "later line sits lower on screen")
+
+	// A point inside line 1 maps to a byte on line 1 (>= nl+1).
+	off, ok3 := text_input_offset_at(&ctx, id, {r_second.x + 0.5, r_second.y + line_h * 0.5})
+	testing.expect(t, ok3, "offset_at ok")
+	testing.expectf(t, off >= nl + 1, "click on line 1 should map past the newline, got %d", off)
+}

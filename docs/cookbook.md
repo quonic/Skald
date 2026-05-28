@@ -235,6 +235,38 @@ skald.text_input(ctx, s.username, on_username, max_chars = 20)
 `text_input` counts runes, not bytes — emoji and accented chars count
 as one.
 
+### Spell-check squiggles with a fix menu
+
+Decorate byte ranges with `marks`, then map a click back to a byte with
+`text_input_offset_at` and anchor the fix popover with
+`text_input_offset_rect`. The checker is yours; Skald just draws and maps.
+
+```odin
+EDITOR :: 0  // give the field a stable id so the accessors can find it
+
+view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
+    marks := make([dynamic]skald.Text_Mark, context.temp_allocator)
+    for m in s.misspellings {            // []{start, end} from your scan (debounced)
+        append(&marks, skald.Text_Mark{start = m.start, end = m.end}) // .Squiggle default
+    }
+    return skald.text_input(ctx, s.text, on_text,
+        id = EDITOR, multiline = true, wrap = true, marks = marks[:])
+}
+
+// In update, reacting to a right-click Msg carrying the screen pos:
+case Right_Click:
+    if off, ok := skald.text_input_offset_at(ctx, EDITOR, v.pos); ok {
+        if word := word_at(s.misspellings, off); word != nil {
+            rect, _ := skald.text_input_offset_rect(ctx, EDITOR, word.start)
+            out.fix_menu = {open = true, anchor = rect, word = word}
+        }
+    }
+```
+
+Call the accessors from `update` — the loop is view→render→update, so the
+field's geometry from this frame is live. `{}` mark colour = theme default
+(red squiggle). The same pair maps editor diagnostics, go-to, annotations.
+
 ### Number field clamped to a range
 
 ```odin

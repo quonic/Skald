@@ -6,6 +6,19 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Added
+
+- **`text_input` decorations + screen↔byte mapping.** A new `marks: []Text_Mark`
+  parameter draws decorations over caller-supplied byte ranges —
+  `Squiggle` (spell-check), `Underline`, and `Highlight` — reusing the
+  per-visual-line selection geometry, so wrapping / clipping / scroll come
+  free. `nil` is byte-identical to before. Paired with two accessors,
+  `text_input_offset_at(pos) -> offset` and `text_input_offset_rect(offset)
+  -> rect`, for mapping clicks to bytes and anchoring popovers under a word.
+  Drives spell-check squiggles + a fix menu today; the same primitive backs
+  editor diagnostics, go-to, and annotations. `Mark_Style` is an enum, so new
+  styles stay additive.
+
 ### Fixed
 
 - **Multiline `text_input` wraps in O(n), not O(n²).** Editing a large
