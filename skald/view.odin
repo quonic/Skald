@@ -4712,11 +4712,12 @@ text_input_payload :: proc(
 // (x, line-top, 0, line-height). Use it to anchor a popover under a word,
 // place an inline annotation, draw an LSP diagnostic marker, etc.
 //
-// Call it from `update` while reacting to input (a click Msg): the loop is
-// view -> render -> update, so the field's geometry from THIS frame is
-// live (the wrap table, scroll, and rect are all current). Returns
-// ok=false if `id` isn't a text_input that rendered this frame, or if
-// there's no renderer. `offset` is clamped to the buffer.
+// Call it from `view` — the accessors need `ctx`, which only `view` has
+// (update does not). Read the click off `ctx.input`, call this against the
+// geometry the field rendered LAST frame (a click lands on what's already
+// on screen, so one-frame-old geometry is correct), and `send` the result
+// as a Msg for update to store. Returns ok=false if `id` isn't a text_input
+// that rendered recently, or if there's no renderer. `offset` is clamped.
 text_input_offset_rect :: proc(ctx: ^Ctx($Msg), id: Widget_ID, offset: int) -> (rect: Rect, ok: bool) {
 	st, exists := ctx.widgets.states[id]
 	if !exists || st.kind != .Text_Input { return {}, false }
@@ -4749,10 +4750,10 @@ text_input_offset_rect :: proc(ctx: ^Ctx($Msg), id: Widget_ID, offset: int) -> (
 }
 
 // text_input_offset_at maps a screen point to the nearest byte offset in
-// the field — the inverse of text_input_offset_rect, and the same
-// call-from-update contract. Use it to resolve which word/character a
+// the field — the inverse of text_input_offset_rect, with the same
+// call-from-`view` contract. Use it to resolve which word/character a
 // (right-)click landed on without disturbing the caret. Returns ok=false
-// if `id` isn't a text_input that rendered this frame.
+// if `id` isn't a text_input that rendered recently.
 text_input_offset_at :: proc(ctx: ^Ctx($Msg), id: Widget_ID, pos: [2]f32) -> (offset: int, ok: bool) {
 	st, exists := ctx.widgets.states[id]
 	if !exists || st.kind != .Text_Input { return 0, false }

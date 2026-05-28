@@ -45,6 +45,7 @@ meant to exercise — the one-liners below are a jumping-off point.
 | `43_chat_input` | `chat_input` composer: Enter=submit, Shift+Enter=newline, paste normalisation, auto-grow, Ctrl+Enter, disabled state. |
 | `44_rich_text`  | `rich_text` / `rich_text_links`: mixed weight + italic + colour + size spans, word-wrap across span seams, inline-code chip, clickable links with cursor swap. |
 | `47_selectable_text` | `text_selectable`, `rich_text_selectable`, `rich_text_selectable_links`: mouse drag-selection, double-click word, triple-click select-all, `Ctrl-A`/`Ctrl-C`, deferred-fire link clicks that double / triple click can cancel. Reference layout for chat-style copyable message bubbles. |
+| `49_text_marks` | `text_input` `marks` (spell-check squiggles, underline, highlight) + the `text_input_offset_at` / `text_input_offset_rect` accessors: right-click a squiggled word → a fix menu anchored under it → pick a suggestion to correct the buffer. The screen↔byte mapping behind editor diagnostics. |
 
 ### Composition and identity
 

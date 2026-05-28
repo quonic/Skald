@@ -662,9 +662,11 @@ for highlight). Supply marks fresh each frame; `nil` is a no-op. To
 react to a click on a mark, map screen↔byte with the accessors below.
 
 ```odin
-// Call from `update` reacting to a click Msg (view→render→update keeps
-// this frame's geometry live). Both return ok=false if `id` isn't a
-// text_input that rendered this frame.
+// Call these from `view` (they need `ctx`, which `update` doesn't have):
+// read the click off `ctx.input`, query against last frame's geometry (a
+// click lands on what's already on screen), and `send` the result as a Msg
+// for update to store. Both return ok=false if `id` isn't a text_input
+// that rendered recently.
 text_input_offset_at   :: proc(ctx, id: Widget_ID, pos: [2]f32) -> (offset: int, ok: bool)
 text_input_offset_rect :: proc(ctx, id: Widget_ID, offset: int)  -> (rect: Rect, ok: bool)
 ```
@@ -674,8 +676,11 @@ caret); `offset_rect` gives the screen rect of a byte (a zero-width
 caret-like rect) to anchor a popover under a word. Spell-check uses
 both — squiggle via `marks`, fix-menu anchor via `offset_rect` — and
 the same pair backs editor diagnostics, go-to, and inline annotations.
+A floating fix menu (`overlay` + `menu`) should get a stable explicit
+`id` or its click-away dismiss won't arm.
 
-**Examples: `examples/08_text_input`, `examples/18_forms`.**
+**Examples: `examples/08_text_input`, `examples/18_forms`,
+`examples/49_text_marks` (marks + offset accessors).**
 
 ### search_field
 
