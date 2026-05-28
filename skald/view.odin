@@ -2,6 +2,7 @@ package skald
 
 import "base:intrinsics"
 import "core:fmt"
+import "core:hash"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -3915,7 +3916,15 @@ _text_input_impl :: proc(
 	if width <= 0 && st.last_rect.w == 0 && do_wrap {
 		widget_request_frame_at(ctx, 1)
 	}
-	visual_lines := build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap, font)
+	// Multiline fields cache the wrapped table across frames (memoized on
+	// content + width + font); single-line fields skip the cache — their
+	// table is one entry and the hash isn't worth it.
+	visual_lines: []Visual_Line
+	if multiline {
+		visual_lines = build_visual_lines_cached(&st, ctx.renderer, new_value, fs, inner_w, do_wrap, font)
+	} else {
+		visual_lines = build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap, font)
+	}
 
 	// Password: compute a `•`-per-rune mask used for hit-testing and
 	// (later) rendering. The edit path stays on `new_value` (real bytes);
@@ -4256,11 +4265,11 @@ _text_input_impl :: proc(
 			if !shift { anchor = cursor }
 		}
 		// Text edits above may have changed new_value; refresh the
-		// visual-line table before any nav key consults it. Cheap to
-		// rebuild — O(runes) with a measure_text per rune — and keeping
-		// one source of truth for lines is worth it.
+		// visual-line table before any nav key consults it. The post-edit
+		// content misses the cache (new hash) and rebuilds once, keeping
+		// one source of truth for lines.
 		if multiline && new_value != value {
-			visual_lines = build_visual_lines(ctx.renderer, new_value, fs, inner_w, do_wrap, font)
+			visual_lines = build_visual_lines_cached(&st, ctx.renderer, new_value, fs, inner_w, do_wrap, font)
 		}
 
 		// Home/End: multiline scopes to the current *visual* line (the
@@ -4900,14 +4909,73 @@ Visual_Line :: struct {
 	consume_space: bool,
 }
 
+// Visual_Line_Cache memoizes a multiline text_input's wrapped line table
+// across frames. `build_visual_lines` is O(runes) but still re-shapes the
+// whole buffer on every call; on an always-redraw app (or just caret
+// blink / scroll) that's pure waste when nothing about the layout changed.
+// The cache is keyed on everything that affects wrap — the text bytes
+// (length + FNV hash), the wrap width, font size, font, and the wrap flag.
+// Owned by the widget slot, freed in `widget_get` / eviction / destroy.
+Visual_Line_Cache :: struct {
+	lines:    [dynamic]Visual_Line,
+	hash:     u64,
+	text_len: int,
+	inner_w:  f32,
+	fs:       f32,
+	font:     Font,
+	wrap:     bool,
+}
+
+// vline_cache_free releases a widget's cached visual-line table. Safe on nil.
+vline_cache_free :: proc(c: ^Visual_Line_Cache) {
+	if c == nil { return }
+	delete(c.lines)
+	free(c)
+}
+
+// build_visual_lines_cached wraps `build_visual_lines` with the per-widget
+// memo above. On a hit it returns a frame-arena copy of the cached table
+// (byte offsets stay valid because the content hash matched); on a miss it
+// rebuilds, refreshes the slot-owned cache, and returns the fresh table.
+// The returned slice is always frame-arena scoped — never aliased to the
+// persistent cache — so a later same-frame rebuild (post-edit) is safe.
+@(private)
+build_visual_lines_cached :: proc(
+	st: ^Widget_State, r: ^Renderer, text: string,
+	fs, inner_w: f32, wrap: bool, font: Font,
+) -> []Visual_Line {
+	h := hash.fnv64a(transmute([]u8)text)
+	if c := st.vline_cache; c != nil &&
+	   c.text_len == len(text) && c.hash == h && c.inner_w == inner_w &&
+	   c.fs == fs && c.font == font && c.wrap == wrap {
+		out := make([]Visual_Line, len(c.lines), context.temp_allocator)
+		copy(out, c.lines[:])
+		return out
+	}
+
+	fresh := build_visual_lines(r, text, fs, inner_w, wrap, font)
+	c := st.vline_cache
+	if c == nil {
+		c = new(Visual_Line_Cache)
+		c.lines = make([dynamic]Visual_Line)
+		st.vline_cache = c
+	}
+	clear(&c.lines)
+	append(&c.lines, ..fresh)
+	c.hash, c.text_len = h, len(text)
+	c.inner_w, c.fs, c.font, c.wrap = inner_w, fs, font, wrap
+	return fresh
+}
+
 // build_visual_lines materializes the visual-line table for a buffer.
 // With `wrap = false` this degenerates to one entry per logical line.
 // With `wrap = true` each logical line is broken at word boundaries
 // (the last space before overflow) or, when no space exists, hard-broken
-// at the last rune that fits. Measures each candidate prefix against
-// `measure_text` — linear in the number of runes, which is fine for
-// edit-buffer-sized text. If `inner_w <= 0` or the renderer is nil the
-// wrap fallback is skipped and we behave as if wrap were off.
+// at the last rune that fits. Each logical line is shaped once into a
+// cumulative-advance array (`text_line_advances`) and the break points
+// fall out as subtractions — O(runes), no per-rune re-measure. If
+// `inner_w <= 0` or the renderer is nil the wrap fallback is skipped and
+// we behave as if wrap were off.
 @(private)
 build_visual_lines :: proc(
 	r: ^Renderer, text: string, fs, inner_w: f32, wrap: bool, font: Font = 0,
@@ -4927,7 +4995,12 @@ build_visual_lines :: proc(
 			// the whole range as one visual line.
 			append(&out, Visual_Line{start = i, end = le})
 		} else {
-			// Wrap the run [i, le] at word boundaries.
+			// Wrap the run [i, le] at word boundaries. Shape the logical
+			// line ONCE into cumulative byte-advances (adv[k] = width of
+			// text[i:i+k]); the break width for any prefix is then a
+			// subtraction instead of a re-measure — O(runes) per line
+			// rather than O(runes) shaping calls.
+			adv := text_line_advances(r, text[i:le], fs, font)
 			pos := i
 			for pos < le {
 				// Walk one rune at a time, remembering the last space we
@@ -4935,13 +5008,14 @@ build_visual_lines :: proc(
 				last_space := -1
 				j := pos
 				fits_all := true
+				base := adv[pos - i]
 				for j < le {
 					// Advance one rune.
 					_, rune_bytes := utf8.decode_rune_in_string(text[j:])
 					if rune_bytes <= 0 { rune_bytes = 1 }
 					next := j + rune_bytes
 					if next > le { next = le }
-					w, _ := measure_text(r, text[pos:next], fs, font)
+					w := adv[next - i] - base
 					if w > inner_w && next > pos + 1 {
 						fits_all = false
 						break
@@ -4971,6 +5045,17 @@ build_visual_lines :: proc(
 					if cut > pos + 1 {
 						_, rb := utf8.decode_last_rune_in_string(text[pos:cut])
 						if rb > 0 && cut - rb > pos { cut -= rb }
+					}
+					if cut <= pos {
+						// The overflow landed on the first rune of the line
+						// and it's multi-byte (emoji / CJK / accented) wider
+						// than inner_w, so the loop broke at j == pos. A
+						// single rune can't shrink — emit exactly it so we
+						// always advance (else `pos` sticks and we'd spin
+						// emitting empty lines until OOM).
+						_, rb := utf8.decode_rune_in_string(text[pos:])
+						cut = pos + max(rb, 1)
+						if cut > le { cut = le }
 					}
 					append(&out, Visual_Line{start = pos, end = cut})
 					pos = cut

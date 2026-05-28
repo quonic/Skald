@@ -552,6 +552,62 @@ measure_text :: proc(
 	return
 }
 
+// text_line_advances fills a freshly-allocated slice of len(text)+1 with
+// the cumulative pen-x advance at each byte boundary: out[0] = 0,
+// out[b] = width of text[:b], out[len(text)] = full width. Bytes that
+// fall inside a multi-byte rune or a shaped cluster carry the cumulative
+// width at the cluster's logical start (you can't break inside a cluster).
+//
+// This is the O(len) replacement for re-measuring a growing prefix per
+// rune: shape the line ONCE, then a wrap pass reads break widths as
+// out[next] - out[pos]. Widths are logical (unscaled) px so they line up
+// with `measure_text`. Allocated on `allocator` (temp by default).
+@(private)
+text_line_advances :: proc(
+	r:    ^Renderer,
+	text: string,
+	size: f32 = 14,
+	font: Font = 0,
+	allocator := context.temp_allocator,
+) -> []f32 {
+	if r != nil && r.text.runa_state != nil {
+		return text_line_advances_runa(r, text, size, font, allocator)
+	}
+	out := make([]f32, len(text) + 1, allocator)
+	if r == nil || len(text) == 0 { return out }
+
+	f := font == 0 ? r.text.default_font : font
+	scale := r.scale
+	if scale <= 0 { scale = 1 }
+	inv := 1 / scale
+
+	fs.BeginState(&r.text.fs)
+	defer fs.EndState(&r.text.fs)
+	fs.SetFont(&r.text.fs, int(f))
+	fs.SetSize(&r.text.fs, size * scale)
+	fs.SetAlignHorizontal(&r.text.fs, .LEFT)
+	fs.SetAlignVertical(&r.text.fs, .BASELINE)
+
+	iter := fs.TextIterInit(&r.text.fs, 0, 0, text)
+	q: fs.Quad
+	last: f32 = 0
+	for fs.TextIterNext(&r.text.fs, &iter, &q) {
+		if iter.str >= 0 && iter.str <= len(text) {
+			out[iter.str] = iter.x * inv
+		}
+		last = iter.nextx * inv
+	}
+	out[len(text)] = last
+	// Carry the last set value across bytes that aren't rune starts (the
+	// wrap pass only indexes rune boundaries, but this keeps the array
+	// monotonic for any other reader).
+	prev: f32 = 0
+	for b in 1 ..= len(text) {
+		if out[b] == 0 { out[b] = prev } else { prev = out[b] }
+	}
+	return out
+}
+
 // byte_index_at_x returns the byte index in `text` whose horizontal
 // position is closest to `x` measured in pixels from the left edge of the
 // string. Used by text_input to translate a mouse click in the content
@@ -690,36 +746,37 @@ expand_tabs :: proc(s: string) -> string {
 // Existing newlines in `text` (any of `\n`, `\r\n`, `\r`) force a break.
 // Returned slice and its backing strings all live in context.temp_allocator
 // — valid for the rest of the frame, not across frames.
-// wrap_break_prefix returns the byte length of the widest prefix of `s`
-// (cut on a UTF-8 rune boundary, always ≥ one rune) whose rendered width
-// fits `max_px` physical pixels. Rendered width is monotonic in prefix
-// length, so it binary-searches the rune boundaries — ~log(n) measure_text
-// calls. Used to hard-break an unbreakable token (long URL / hash / base64)
-// that's wider than the wrap width instead of letting it overflow.
+// wrap_break_prefix returns the byte length (cut on a UTF-8 rune boundary,
+// always ≥ one rune) of the widest prefix of `s[off:end]` whose width fits
+// `max_w` logical pixels. `adv` is the cumulative byte-advance table for the
+// whole of `s` (from text_line_advances), so width is read as a subtraction;
+// rendered width is monotonic in prefix length, so it binary-searches the
+// rune boundaries — no measurement here. Used to hard-break an unbreakable
+// token (long URL / hash / base64) wider than the wrap width.
 @(private)
-wrap_break_prefix :: proc(r: ^Renderer, s: string, size: f32, font: Font, scale, max_px: f32) -> int {
-	bounds: [dynamic]int   // rune-start byte offsets, then len(s)
+wrap_break_prefix :: proc(adv: []f32, s: string, off, end: int, max_w: f32) -> int {
+	bounds: [dynamic]int   // rune-start byte offsets in [off, end], then end
 	bounds.allocator = context.temp_allocator
-	for i := 0; i < len(s); {
+	for i := off; i < end; {
 		append(&bounds, i)
 		_, n := utf8.decode_rune_in_string(s[i:])
 		i += max(n, 1)
 	}
-	append(&bounds, len(s))
-	// Largest k≥1 with width(s[:bounds[k]]) ≤ max_px. Floors at 1 rune so a
+	append(&bounds, end)
+	// Largest k≥1 with width(s[off:bounds[k]]) ≤ max_w. Floors at 1 rune so a
 	// token narrower-than-one-glyph still advances (no infinite loop).
+	base := adv[off]
 	lo, hi, best := 1, len(bounds) - 1, 1
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		cw, _ := measure_text(r, s[:bounds[mid]], size, font)
-		if cw * scale <= max_px {
+		if adv[bounds[mid]] - base <= max_w {
 			best = mid
 			lo = mid + 1
 		} else {
 			hi = mid - 1
 		}
 	}
-	return bounds[best]
+	return bounds[best] - off
 }
 
 wrap_text :: proc(
@@ -761,19 +818,10 @@ wrap_text :: proc(
 		}
 		if cached, ok := r.wrap_cache[key]; ok { return cached }
 	}
-	scale := r.scale
-	if scale <= 0 { scale = 1 }
-	// wrap_text measures candidate lines against `max_width` (logical).
-	// We scale the threshold up once and compare physical widths inside
-	// the loop instead of dividing every measurement down.
-	//
-	// Measurement dispatches through `measure_text` so the active text
-	// backend (fontstash or runa) and `draw_text` agree on widths — when
-	// we measured here with fontstash directly and rendered with runa,
-	// the ~1% per-glyph metric differences accumulated into visible
-	// overflow at line ends in chat-style UIs.
-	max_width_px := max_width * scale
-
+	// Widths are compared in logical px. measure_text and text_line_advances
+	// both divide by scale and dispatch through the active backend, so the
+	// wrap here agrees with what draw_text renders (mismatched backends used
+	// to accumulate ~1% per-glyph drift into visible overflow at line ends).
 	lines: [dynamic]string
 	lines.allocator = context.temp_allocator
 
@@ -793,6 +841,9 @@ wrap_text :: proc(
 			append(&lines, "")
 			continue
 		}
+		// Shape the paragraph ONCE into cumulative byte-advances; every
+		// candidate-line width below is a subtraction, not a re-measure.
+		adv := text_line_advances(r, para, size, f)
 		cursor := 0
 		emitted_any := false
 		for cursor < len(para) {
@@ -810,10 +861,8 @@ wrap_text :: proc(
 				for word_end < len(para) && para[word_end] != ' ' {
 					word_end += 1
 				}
-				candidate := para[line_begin:word_end]
-				cw, _ := measure_text(r, candidate, size, f)
-				w := cw * scale
-				if w <= max_width_px {
+				w := adv[word_end] - adv[line_begin]
+				if w <= max_width {
 					last_fit_end = word_end
 					cursor = word_end
 					// Consume a single trailing space for the next
@@ -824,7 +873,7 @@ wrap_text :: proc(
 					// max_width: hard-break it at the widest fitting
 					// rune-boundary prefix instead of overflowing. The
 					// remainder wraps onto the next line(s).
-					blen := wrap_break_prefix(r, para[line_begin:word_end], size, f, scale, max_width_px)
+					blen := wrap_break_prefix(adv, para, line_begin, word_end, max_width)
 					last_fit_end = line_begin + blen
 					cursor = last_fit_end
 					break
@@ -935,9 +984,12 @@ wrap_rich_text :: proc(
 		return lines[:]
 	}
 
-	// 1) Atomise.
+	// 1) Atomise. Each span is shaped ONCE into cumulative byte-advances
+	// (kept in span_advs for the hard-break pass below); word widths are
+	// read as subtractions instead of one measure_text per word.
 	atoms: [dynamic]Rich_Atom
 	atoms.allocator = context.temp_allocator
+	span_advs := make([][]f32, len(spans), context.temp_allocator)
 	for sp, sp_idx in spans {
 		if len(sp.str) == 0 { continue }
 		fnt := rich_span_font(r, base_font, sp)
@@ -946,6 +998,8 @@ wrap_rich_text :: proc(
 		_, lh := measure_text(r, "", sz, fnt)
 		space_w, _ := measure_text(r, " ", sz, fnt)
 		s := sp.str
+		adv := text_line_advances(r, s, sz, fnt)
+		span_advs[sp_idx] = adv
 		i := 0
 		for i < len(s) {
 			ch := s[i]
@@ -971,7 +1025,7 @@ wrap_rich_text :: proc(
 			}
 			word_start := i
 			for i < len(s) && s[i] != ' ' && s[i] != '\n' { i += 1 }
-			ww, _ := measure_text(r, s[word_start:i], sz, fnt)
+			ww := adv[i] - adv[word_start]
 			append(&atoms, Rich_Atom{
 				span_idx = sp_idx,
 				byte_start = word_start, byte_end = i,
@@ -1047,19 +1101,18 @@ wrap_rich_text :: proc(
 		// current line first so the long token starts fresh, then emit
 		// fitting prefixes as their own lines; the remainder appends
 		// normally. Sub-atoms inherit the original's span_idx, so the
-		// break keeps the token's styling. Rich-text widths are logical
-		// (no scale factor), so wrap_break_prefix is called with scale 1.
+		// break keeps the token's styling. Widths come from the span's
+		// cumulative-advance table (logical px), shared with atomisation.
 		if max_width > 0 && atom.kind == .Word && atom.width > max_width {
 			if len(cur) > 0 {
 				flush(&lines, &cur, default_ascent, default_line_h)
 				clear(&cur); cur_w = 0
 			}
 			sp  := spans[atom.span_idx]
-			fnt := rich_span_font(r, base_font, sp)
-			sz  := rich_span_size(base_size, sp)
+			adv := span_advs[atom.span_idx]
 			bs  := atom.byte_start
 			for bs < atom.byte_end {
-				rem_w, _ := measure_text(r, sp.str[bs:atom.byte_end], sz, fnt)
+				rem_w := adv[atom.byte_end] - adv[bs]
 				if rem_w <= max_width {
 					rem := atom
 					rem.byte_start = bs
@@ -1067,8 +1120,8 @@ wrap_rich_text :: proc(
 					append(&cur, rem); cur_w += rem_w
 					break
 				}
-				blen   := wrap_break_prefix(r, sp.str[bs:atom.byte_end], sz, fnt, 1, max_width)
-				pw, _  := measure_text(r, sp.str[bs:bs+blen], sz, fnt)
+				blen   := wrap_break_prefix(adv, sp.str, bs, atom.byte_end, max_width)
+				pw     := adv[bs+blen] - adv[bs]
 				prefix := atom
 				prefix.byte_start = bs
 				prefix.byte_end   = bs + blen

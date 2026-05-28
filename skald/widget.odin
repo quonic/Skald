@@ -244,6 +244,13 @@ Widget_State :: struct {
 	press_link_idx:  int,
 	link_fire_at_ns: i64,
 
+	// vline_cache memoizes a multiline text_input's wrapped visual-line
+	// table across frames (see Visual_Line_Cache). Allocated lazily on the
+	// first multiline build, owned by this slot on the persistent heap,
+	// freed when the slot is reused by another widget kind or the store is
+	// destroyed. Nil for every non-multiline widget.
+	vline_cache: ^Visual_Line_Cache,
+
 	// last_overlay_frame is the most recent frame on which this widget's
 	// `widget_record_rect` ran while the renderer was inside an overlay
 	// subtree (a dialog card, a popover, a menu, a tooltip — anything
@@ -600,6 +607,7 @@ widget_store_destroy :: proc(ws: ^Widget_Store) {
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
 		link_rects_free(st.link_rects)
+		vline_cache_free(st.vline_cache)
 	}
 	delete(ws.states)
 	delete(ws.focusables)
@@ -731,6 +739,7 @@ widget_store_evict_stale :: proc(ws: ^Widget_Store) {
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
 		link_rects_free(st.link_rects)
+		vline_cache_free(st.vline_cache)
 		delete_key(&ws.states, id)
 	}
 }
@@ -911,6 +920,7 @@ widget_get :: proc(ctx: ^Ctx($Msg), id: Widget_ID, kind: Widget_Kind) -> Widget_
 		}
 		if len(st.text_buffer) > 0 { delete(st.text_buffer) }
 		link_rects_free(st.link_rects)
+		vline_cache_free(st.vline_cache)
 		st = Widget_State{kind = kind}
 		// Persist the reset state back to the store. Otherwise the
 		// map entry still holds the now-freed pointers (undo /

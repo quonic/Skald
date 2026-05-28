@@ -2,6 +2,7 @@ package skald
 
 import "core:fmt"
 import "core:math"
+import "core:mem"
 import vk "vendor:vulkan"
 import runa "third_party/runa"
 
@@ -399,6 +400,50 @@ measure_text_runa :: proc(
 		h = (fnt.ascent - fnt.descent + fnt.line_gap) * (size * scale) / extent
 	}
 	return w / scale, h / scale
+}
+
+// text_line_advances_runa is the runa backend for `text_line_advances`:
+// shape `text` once, then attribute each glyph's padded advance to its
+// logical cluster-start byte and prefix-sum into cumulative widths. The
+// per-glyph advance goes through `text_runa_glyph_advance` — the SAME
+// padded advance `draw_text_runa` / `measure_text_runa` use — so wrap
+// break widths agree with where the caret and glyphs actually land.
+@(private)
+text_line_advances_runa :: proc(
+	r: ^Renderer, text: string, size: f32, font: Font, allocator: mem.Allocator,
+) -> []f32 {
+	out := make([]f32, len(text) + 1, allocator)
+	rs := r.text.runa_state
+	if rs == nil || len(text) == 0 { return out }
+	f := font == 0 ? r.text.default_font : font
+	if int(f) < 0 || int(f) >= len(rs.fonts) { return out }
+
+	scale := r.scale
+	if scale <= 0 { scale = 1 }
+
+	stack := text_runa_stack(rs, f)
+	px_size := text_runa_px_size(rs.fonts[int(f)], size * scale)
+	opts := runa.Paragraph_Opts{fonts = stack, size = px_size}
+
+	lines, err := runa.layout_paragraph(text, opts, &rs.cache, context.temp_allocator)
+	if err != .None { return out }
+
+	// Stash each glyph's advance at its cluster-start byte (out[b] is used
+	// as a scratch delta array here, then converted to a prefix sum).
+	for line in lines {
+		for g in line.glyphs {
+			cb := int(g.cluster)
+			if cb < 0 || cb > len(text) { continue }
+			out[cb] += text_runa_glyph_advance(g.font, u16(g.glyph_id), g.x_advance)
+		}
+	}
+	running: f32 = 0
+	for b in 0 ..= len(text) {
+		d := out[b]
+		out[b] = running / scale
+		running += d
+	}
+	return out
 }
 
 @(private)

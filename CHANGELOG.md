@@ -8,6 +8,34 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **Multiline `text_input` wraps in O(n), not O(n²).** Editing a large
+  document (~1000+ words) was laggy: the wrap pass re-measured a growing
+  prefix once per rune per line, so cost scaled quadratically and thrashed
+  the text-shape cache. Each logical line is now shaped once into a
+  cumulative-advance table, and the wrapped result is memoized across frames
+  (rebuilt only when the text, width, or font changes). A 1200-word field
+  went from ~300 ms to ~5 ms per keystroke, and ~0.05 ms on an idle repaint.
+
+- **Wrapped `text_input` no longer hangs on a too-narrow field.** A multiline
+  field whose wrap width was smaller than a single multi-byte glyph (emoji /
+  CJK / accented) at the line start spun emitting empty lines until it ran the
+  process out of memory. The hard-break now always advances by at least that
+  one rune. (Latent since the long-token wrap landed; surfaced by fuzzing.)
+
+- **Static `text()` / `rich_text()` wrapping is O(n) too.** `wrap_text` was
+  re-measuring a growing line prefix once per word, and `wrap_rich_text`
+  shaped every word separately — both now shape each paragraph/span once
+  into a cumulative-advance table and read break widths by subtraction
+  (wrap behaviour, including the long-token rune hard-break, is unchanged).
+  A large prose/markdown block wraps in a few ms instead of tens of ms; the
+  per-frame wrap cache still dedupes the layout+render double-walk.
+
+- **Focusable widgets release focus on an outside click.** Clicking a button,
+  checkbox, radio, toggle (or the table's keyboard row-nav) and then clicking
+  away left it focused, so a later Space/Enter still activated it. A left-press
+  outside the focused widget now clears focus — clicks inside an open popover or
+  on a modal scrim are excepted. (#3, thanks @NANDquark)
+
 - **Text-engine hardening (runa).** Fixed two issues found by fuzzing the
   bundled text engine under AddressSanitizer/MemorySanitizer: (1) a
   Devanagari cluster ending in RA + Virama (e.g. `र`+`्`) read out of bounds
