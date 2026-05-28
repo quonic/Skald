@@ -118,6 +118,30 @@ for item in s.items {
 Same principle: the id has to come from the *item*, not the list
 index.
 
+## Explicit widget ids must come from `hash_id`
+
+When you give a widget an explicit `id`, always derive it from
+`hash_id("some-key")` — never a raw integer like `Widget_ID(1)`.
+Auto-ids are sequential small integers, and `hash_id` deliberately
+sets a high bit to keep explicit ids out of that range. A raw small
+int has no such bit, so `Widget_ID(1)` lands on the same value as the
+first auto-id widget — the two then share one state slot, which shows
+up as bizarre, hard-to-trace behavior (a widget that won't focus, a
+popover that won't dismiss, a checkbox that mirrors another).
+
+```odin
+editor := skald.hash_id("editor")          // ✓ collision-free
+skald.text_input(ctx, s.text, on_text, id = editor)
+ok, off := skald.text_input_offset_at(ctx, editor, pos)   // same id everywhere
+
+// editor := skald.Widget_ID(1)            // ✗ collides with an auto-id
+```
+
+`widget_resolve_id` now forces explicit ids into the high half as a
+backstop, but you should still always use `hash_id` — it's the only
+form that also matches when you reference the id from `widget_get`,
+`widget_focus`, or the `text_input_offset_*` accessors.
+
 ## Persistent draft buffers and use-after-free
 
 If you write a widget that keeps a draft string on the persistent

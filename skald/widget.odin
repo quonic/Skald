@@ -900,9 +900,20 @@ hash_id :: proc(key: string) -> Widget_ID {
 // positional auto-id. Builders call it once via `id := widget_resolve_id(ctx, id)`
 // so existing `id` references in the body stay unchanged — the local
 // shadow of the param turns into a real Widget_ID in one step.
+//
+// Explicit ids are forced into the high half of the id space
+// (WIDGET_ID_EXPLICIT_BIT) so they can NEVER collide with positional
+// auto-ids, which stay in the low half. `hash_id` already sets this bit,
+// so the OR is a no-op for the documented path; the OR exists to also cover
+// a caller passing a *raw* small-int id (e.g. `Widget_ID(1)`), which would
+// otherwise land on top of an auto-id and silently corrupt that widget's
+// state. NOTE: a raw explicit id you also pass to a direct API
+// (`widget_get`/`widget_focus`/`text_input_offset_*`) won't match — those
+// see the raw value while the widget is stored under the normalized one, so
+// any id you reference elsewhere must come from `hash_id`.
 @(private)
 widget_resolve_id :: proc(ctx: ^Ctx($Msg), explicit: Widget_ID) -> Widget_ID {
-	if explicit != 0 { return explicit }
+	if explicit != 0 { return explicit | WIDGET_ID_EXPLICIT_BIT }
 	return widget_auto_id(ctx)
 }
 
